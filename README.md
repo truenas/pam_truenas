@@ -1,6 +1,6 @@
 # PAM TrueNAS
 
-PAM module for TrueNAS providing SCRAM-SHA-512 authentication, session management, and brute-force protection using the Linux kernel keyring.
+PAM module for TrueNAS providing SCRAM-SHA-512 authentication and session management.
 
 ## Features
 
@@ -123,11 +123,15 @@ Not implemented, returns `PAM_IGNORE`.
 
 ```
 # Authentication with faillock
-auth    [success=1 default=ignore]    pam_truenas.so debug
+auth    [success=2 default=ignore]    pam_unix.so
+auth    [success=1 default=ignore]    pam_truenas.so
 auth    [default=done]                pam_truenas.so authfail
 auth    required                      pam_truenas.so authsucc
+auth    required                      pam_permit.so
 
 # Account management (use other module or permit)
+account [success=1 new_authtok_reqd=done default=ignore]        pam_unix.so
+account requisite                     pam_deny.so
 account required                      pam_permit.so
 
 # Session management with limits
@@ -163,7 +167,6 @@ Implements SRG-OS-000329-GPOS-00128:
 - Lock after **3 failures** within **15 minutes**
 - Automatic unlock after **15 minutes**
 - Per-source tracking (RHOST or TTY)
-- Thread-safe keyring storage
 
 Failure entries stored in FAILLOG keyring:
 - Key description: Unix timestamp
@@ -219,7 +222,6 @@ sudo keyctl show $KEYRING_ID
 ### Common Errors
 
 **"Failed to find keyring 'PAM_TRUENAS'"**
-- API keys not provisioned by middleware
 - Run middleware API key setup
 
 **"API key expired"**
@@ -229,7 +231,6 @@ sudo keyctl show $KEYRING_ID
 **"Session limit exceeded"**
 - User at max_sessions limit
 - Check active sessions with Python libraries
-- Old processes may not have cleaned up
 
 ## License
 
