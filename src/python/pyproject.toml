@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "truenas-pam-session"
+version = "1.0.0"
+description = "TrueNAS PAM Session Iterator for LMDB"
+readme = "README.md"
+authors = [
+    { name = "TrueNAS" }
+]
+license = { text = "LGPL-3.0-or-later" }
+requires-python = ">=3.8"
+dependencies = [
+    "truenas_keyring",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+    "Topic :: System :: Systems Administration :: Authentication/Directory",
+]
+
+[tool.setuptools]
+py-modules = ["truenas_pam_session", "truenas_pam_faillog"]

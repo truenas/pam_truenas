@@ -1,0 +1,30 @@
+#!/usr/bin/make -f
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+export PYBUILD_DISABLE=1
+
+%:
+	dh $@ --with autoreconf,python3
+
+override_dh_auto_configure:
+	dh_autoreconf
+	dh_auto_configure -- --with-pam-dir=/usr/lib/security
+
+override_dh_auto_build:
+	dh_auto_build
+	cd src/python && python3 -m build --wheel --no-isolation
+
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/libpam-truenas
+	cd src/python && python3 -m installer --destdir=$(CURDIR)/debian/python3-truenas-pam-utils dist/*.whl
+	# Clear dependency_libs in .la file to fix lintian error
+	find debian/libpam-truenas -name "*.la" -exec sed -i "/dependency_libs/ s/'.*'/''/g" {} \;
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -rf src/python/build src/python/dist src/python/*.egg-info
+
+override_dh_install:
+	# Files are already in the right package directories, skip dh_install
