@@ -392,9 +392,9 @@ An `AF_UNIX` origin contains the following fields based on `SO_PEERCRED`
 {
   "origin_family: "AF_INET",
   "origin": {
-    "loc_addr": "192.168.1.200,
+    "loc_addr": "192.168.1.200",
     "loc_port": 53693,
-    "rem_addr": "192.168.1.201,
+    "rem_addr": "192.168.1.201",
     "rem_port": 53643,
     "ssl": true
   }
