@@ -98,8 +98,14 @@ _Static_assert(sizeof(kr_sess_t) == 4096, "kr_sess_t unexpected size");
  *
  * This function stores the session in the kernel keyring. It assumes
  * that kr_sess_t has been fully populated by json.c
- * @param user_kr User keyring serial to store session under
- * Returns keyring ID through key_out for later use
+ *
+ * @param[in] pamh - initialized pam handle
+ * @param[in] ctrl - pam configuration flags for specific operation
+ * @param[in] sess - filled out keyring session info
+ * @param[out] key_out - keyring ID of new keyring-based session
+ * @param[out] err - error information on failure
+ *
+ * @return PAM response (PAM_SUCCESS, PAM_SERVICE_ERR, etc)
  */
 int ptn_kr_open_session(pam_handle_t *pamh, uint32_t ctrl, key_serial_t user_kr,
                         kr_sess_t *sess, key_serial_t *key_out, kr_err_msg_t *err);
@@ -109,6 +115,14 @@ int ptn_kr_open_session(pam_handle_t *pamh, uint32_t ctrl, key_serial_t user_kr,
  *
  * This function removes the session from the keyring using the key_id from open_session.
  * Uses the key ID passed in (from open_session)
+ *
+ * @param[in] pamh - initialized pam handle
+ * @param[in] ctrl - pam configuration flags for specific operation
+ * @param[in] sess - filled out keyring session info
+ * @param[out] key_out - keyring ID of new keyring-based session
+ * @param[out] err - error information on failure
+ *
+ * @return PAM response (PAM_SUCCESS, PAM_SERVICE_ERR, etc)
  */
 int ptn_kr_close_session(pam_handle_t *pamh, uint32_t ctrl, kr_sess_t *sess,
                          key_serial_t key_id, kr_err_msg_t *err);
@@ -119,10 +133,11 @@ int ptn_kr_close_session(pam_handle_t *pamh, uint32_t ctrl, kr_sess_t *sess,
  * This function counts the number of valid (non-expired/non-revoked) session
  * keys in the user's session keyring.
  *
- * @param user_kr User keyring serial containing the SESSIONS keyring
- * @param count_out Pointer to store the session count
- * @param err Error message structure
- * @return PAM_SUCCESS on success, error code otherwise
+ * @param[in] user_kr  - User keyring serial containing the SESSIONS keyring
+ * @param[in] count_out - Pointer to store the session count
+ * @param[out] err - Error message structure
+ *
+ * @return PAM response (PAM_SUCCESS, PAM_SERVICE_ERR, etc)
  */
 int ptn_kr_get_session_count(key_serial_t user_kr, size_t *count_out,
                               kr_err_msg_t *err);
