@@ -58,9 +58,7 @@ AC_FUNC_MALLOC
 AC_CHECK_FUNCS([clock_gettime memset strchr strdup strlen strtoul])
 
 # Check for strlcpy
-AC_CHECK_FUNCS([strlcpy], [
-    AC_DEFINE([HAVE_STRLCPY], [1], [Define to 1 if you have the strlcpy function.])
-])
+AC_CHECK_FUNCS([strlcpy], [], [AC_MSG_ERROR([stlcpy function not found])])
 
 # Check for explicit_bzero or memset_explicit
 AC_CHECK_FUNCS([explicit_bzero], [], [
