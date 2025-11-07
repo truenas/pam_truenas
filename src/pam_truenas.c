@@ -116,7 +116,7 @@ int ptn_process_tally(pam_tn_ctx_t *ctx)
  * # Authentication may be through either directly passing API key (password-style)
  * # or SCRAM protocol
  *
- * For failock implementation a sample configuration is as follows:
+ * For faillock implementation a sample configuration is as follows:
  * auth    [success=1 default=ignore] pam_truenas.so
  * # Basic authentication. On success jump down 1 (skipping `authfail` line)
  * auth    [default=done] pam_truenas.so authfail

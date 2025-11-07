@@ -109,6 +109,15 @@ int ptn_do_plain_auth(pam_tn_ctx_t *pam_ctx, const char *username)
 		return PAM_AUTHTOK_ERR;
 	}
 
+	if (password == NULL) {
+		/*
+		 * This is purely defensive programming. We shouldn't have case
+		 * with pam_get_authtok() returns PAM_SUCCESS without an auth token
+		 */
+		PAM_CTX_DEBUG(pam_ctx, LOG_ERR, "User password not set");
+		return PAM_AUTHTOK_ERR;
+	}
+
 	/* password may be of form:
 	 *
 	 * 1-<keymaterial>
