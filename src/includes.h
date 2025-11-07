@@ -91,6 +91,9 @@
 	 })
 
 /* PAM debug macros */
+#define PAM_TRUENAS_LOG(pamh, priority, fmt, ...) \
+	pam_syslog(pamh, priority, fmt " [%s]", ##__VA_ARGS__, __location__)
+
 #define PAM_TRUENAS_DEBUG(pamh, ctrl, priority, fmt, ...) \
 do { \
 	if (pam_log_is_debug_enabled(ctrl)) { \
