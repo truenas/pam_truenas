@@ -157,6 +157,11 @@ int ptn_do_plain_auth(pam_tn_ctx_t *pam_ctx, const char *username)
 		.size = strlen(password)
 	};
 
+	/*
+	 * The following are just some cryptographic operations to validate
+	 * the provided password against our stored server secrets. There is
+	 * no PAM conversation that happens at this point.
+	 */
 	resp = scram_hi(&raw_pwd, &server->salt, server->iterations, &salted_pwd, &error);
 
 	// We're done with password at this point since we've
