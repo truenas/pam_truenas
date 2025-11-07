@@ -6,6 +6,8 @@
 #include <string.h>
 #include <errno.h>
 
+#define KEY_TYPE_KEYRING "keyring"
+
 /* man (7) sem_overview maximum name length for named semaphore */
 typedef char semname_t[NAME_MAX - 4];
 
@@ -46,22 +48,24 @@ void keyring_semaphore_cleanup(sem_t *krsem, const char *name, bool unlink)
 }
 
 /**
- * function to atomically get or create a keyring with the specified name
+ * Function to atomically get or create a keyring with the specified name
  * inside the specified keyring. It's technically possible to create multiple
  * keys with the same description in the same keyring; however, there is not
  * a convenient method to get all instances matching a particular description.
  * keyctl_search() will return the most recently added. This means we need
- * to use a synchronization primitive if must go from the get to the create
+ * to use a synchronization primitive if we must go from the get to the create
  * portion of this function. Since it may be called internally by multiple
  * threads in the same process (if there are multiple PAM handles) or by
  * multiple processes, we're currently using named semaphores here.
+ *
+ * Returns keyring serial on success or -1 (with errno set) on error
  */
 static key_serial_t get_or_create_keyring(key_serial_t pkey, const char *name)
 {
 	key_serial_t found, created;
 	sem_t *sem;
 
-	found = keyctl_search(pkey, "keyring", name, 0);
+	found = keyctl_search(pkey, KEY_TYPE_KEYRING, name, 0);
 	if ((found > 0) || ((found == -1) && (errno != ENOKEY))) {
 		// We either found the key or had an unexpected error
 		return found;
@@ -78,7 +82,7 @@ static key_serial_t get_or_create_keyring(key_serial_t pkey, const char *name)
 	// search for key a second time. Another process or thread
 	// may have created the key between our first check and us
 	// acquiring the semaphore
-	found = keyctl_search(pkey, "keyring", name, 0);
+	found = keyctl_search(pkey, KEY_TYPE_KEYRING, name, 0);
 	if ((found > 0) || ((found == -1) && (errno != ENOKEY))) {
 		// We either found the key or had an unexpected error
 		// Keep semaphore around in hopes someone can fix
@@ -86,7 +90,7 @@ static key_serial_t get_or_create_keyring(key_serial_t pkey, const char *name)
 		return found;
 	}
 
-	created = add_key("keyring", name, NULL, 0, pkey);
+	created = add_key(KEY_TYPE_KEYRING, name, NULL, 0, pkey);
 	if (created == -1) {
 		keyring_semaphore_cleanup(sem, name, false);
 		return created;
@@ -100,6 +104,8 @@ static key_serial_t get_or_create_keyring(key_serial_t pkey, const char *name)
 
 /* This function retrieves the top-level "PAM_TRUENAS" keyring which
  * resides in the persistent keyring of UID 0
+ *
+ * Returns keyring serial on success or -1 (with errno set) on error
  */
 key_serial_t keyring_get_pam_keyring(void)
 {
@@ -119,6 +125,8 @@ key_serial_t keyring_get_pam_keyring(void)
 /* This function retrieves the per-user from the specified keyring. If
  * the keyring is unspecified (set to zero), then the PAM_TRUENAS keyring
  * will be retrieved and used to get this keyring
+ *
+ * Returns keyring serial on success or -1 (with errno set) on error
  */
 key_serial_t keyring_get_truenas_user_keyring(key_serial_t pkey, const char *username)
 {
@@ -182,6 +190,8 @@ key_serial_t keyring_get_tally(key_serial_t user_keyring)
 /* This function retrieves the encrypted API key information from
  * the specified user_keyring based on the information specified
  * in the provided scram_principal_t struct.
+ *
+ * Returns 0 on success or -errno on error
  */
 static int get_encrypted_user_data(key_serial_t api_keys_kr,
 				   scram_principal_t *principal,
@@ -189,7 +199,7 @@ static int get_encrypted_user_data(key_serial_t api_keys_kr,
 				   keyring_err_msg_t *error_msg)
 {
 	key_serial_t api_key;
-	char api_key_desc[16];
+	char api_key_desc[21];
 	long key_size;
 
 	if ((principal == NULL) || (data_out == NULL)) {
@@ -252,6 +262,8 @@ static int get_encrypted_user_data(key_serial_t api_keys_kr,
  * Once the API key data is retrieved, it is decrypted using the general-purpose
  * truenas_pwenc library (https://github.com/truenas/truenas_pwenc).
  * and then loaded into memory.
+ *
+ * Returns 0 on success or -errno on error
  */
 int load_server_auth_data_from_keyring(pam_tn_ctx_t *pam_ctx,
 				       keyring_err_msg_t *error_msg)

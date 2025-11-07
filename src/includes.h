@@ -25,6 +25,7 @@
 
 #include <truenas_scram.h>
 #include <truenas_pwenc.h>
+#include "error.h"
 #include "cleanup.h"
 
 /* Constants */
@@ -90,13 +91,6 @@
 	 })
 
 /* PAM debug macros */
-#define __stringify(x) #x
-#define __stringify2(x) __stringify(x)
-#define __location__ __FILE__ ":" __stringify2(__LINE__)
-
-#define PAM_TRUENAS_LOG(pamh, priority, fmt, ...) \
-	pam_syslog(pamh, priority, fmt " [%s]", ##__VA_ARGS__, __location__)
-
 #define PAM_TRUENAS_DEBUG(pamh, ctrl, priority, fmt, ...) \
 do { \
 	if (pam_log_is_debug_enabled(ctrl)) { \

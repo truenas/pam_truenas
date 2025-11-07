@@ -128,7 +128,7 @@ json_resp_t parse_expiry_json(ptn_auth_data_t *auth_data,
 }
 
 /* General-purpose function to convert a base64-encoded blob into a
- * crypto_dataum_t type. This is for fields holding crypto information
+ * crypto_datum_t type. This is for fields holding crypto information
  * (server_key, stored_key, salt, etc).
  */
 static
@@ -513,6 +513,7 @@ json_resp_t parse_json_sess_entry(pam_tn_ctx_t *ctx, json_error_info_t *err)
 	}
 
 	/* Parse origin_family */
+	sess->origin_family = AF_UNSPEC;
 	val = json_object_get(root, FIELD_ADDR_F);
 	if (val && json_is_string(val)) {
 		strval = json_string_value(val);

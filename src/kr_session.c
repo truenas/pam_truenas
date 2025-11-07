@@ -10,6 +10,8 @@
 #include <signal.h>
 #include <uuid/uuid.h>
 
+#define KEY_TYPE_USER "user"
+
 /**
  * @brief Create an entry in kernel keyring for the session
  *
@@ -40,7 +42,7 @@ ptn_kr_open_session(pam_handle_t *pamh, uint32_t ctrl, key_serial_t session_keyr
 	snprintf(key_desc + uuid_len, sizeof(key_desc) - uuid_len, ":%d", sess->pid);
 
 	/* Add the session data to the keyring using "UUID:pid" as description */
-	key_id = add_key("user", key_desc, sess, sizeof(kr_sess_t), session_keyring);
+	key_id = add_key(KEY_TYPE_USER, key_desc, sess, sizeof(kr_sess_t), session_keyring);
 	if (key_id == -1) {
 		ptn_set_error(err, "Failed to add session to keyring: %s", strerror(errno));
 		return PAM_SESSION_ERR;

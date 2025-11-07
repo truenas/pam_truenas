@@ -200,7 +200,7 @@ sudo apt install python3-truenas-pam-utils
   - `pid`, `sid` - Process and session IDs
   - `service`, `rhost`, `ruser`, `tty` - PAM items
   - `origin_family` - Origin type: "AF_UNIX", "AF_INET", "AF_INET6"
-  - `origin` - Origin details (PamUnixOrigin or PamTcpOrigin)
+  - `origin` - Origin details (`PamUnixOrigin` or `PamTcpOrigin`)
   - `extra_data` - Additional JSON metadata
 
 - `PamUnixOrigin` - Unix socket connection details:
@@ -360,7 +360,7 @@ An `AF_UNIX` origin contains the following fields based on `SO_PEERCRED`
 - `"loginuid"` - The loginuid of the peer process.
 - `"sec"` - The LSM label for the peer process.
 
-#### `AF_INET` and `AF_INET6`
+#### `AF_INET` and `AF_INET6` origin
 
 `AF_INET` and `AF_INET6` origins contain the same fields.
 - `"loc_addr"` - The local IP address associated with the TCP/IP connection.
