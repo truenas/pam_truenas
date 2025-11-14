@@ -162,18 +162,14 @@ class SessionIterator:
         Initialize session iterator
         """
         self.pam_keyring = None
-        try:
-            # Get the persistent keyring
-            persistent = truenas_keyring.get_persistent_keyring()
+        # Get the persistent keyring
+        persistent = truenas_keyring.get_persistent_keyring()
 
-            # Use search() method to find the PAM_TRUENAS keyring within persistent keyring
-            self.pam_keyring = persistent.search(
-                key_type=truenas_keyring.KeyType.KEYRING,
-                description=PAM_KEYRING_NAME
-            )
-        except Exception:
-            # Keyring not accessible or doesn't exist
-            pass
+        # Use search() method to find the PAM_TRUENAS keyring within persistent keyring
+        self.pam_keyring = persistent.search(
+            key_type=truenas_keyring.KeyType.KEYRING,
+            description=PAM_KEYRING_NAME
+        )
 
     def _decode_session(self, key_desc: str, value: bytes) -> PamSession:
         """Decode a session from keyring data"""
@@ -280,49 +276,27 @@ class SessionIterator:
         Yields:
             PamSession objects for each session in the keyring
         """
-        if self.pam_keyring is None:
-            return
-
         # The PAM_TRUENAS keyring contains username-based sub-keyrings
         # Structure: PAM_TRUENAS -> username -> SESSIONS -> session_keys
-        try:
-            # Iterate through all username keyrings under PAM_TRUENAS
-            for user_item in self.pam_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
-                # Check if it's a keyring by checking for the 'key' attribute
-                if not hasattr(user_item, 'key'):
-                    # Skip non-keyring items
-                    continue
 
-                # This is a username keyring, now find the SESSIONS keyring under it
-                user_keyring = user_item
+        # Iterate through all username keyrings under PAM_TRUENAS
+        for user_keyring in self.pam_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
+            # This is a username keyring, now find the SESSIONS keyring under it
+            sessions_keyring = user_keyring.search(
+                key_type=truenas_keyring.KeyType.KEYRING,
+                description=PAM_SESSION_NAME
+            )
 
+            # Iterate through the sessions in the SESSIONS keyring
+            for session_key in sessions_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
                 try:
-                    # Look for the SESSIONS keyring under this user
-                    sessions_keyring = user_keyring.search(
-                        key_type=truenas_keyring.KeyType.KEYRING,
-                        description=PAM_SESSION_NAME
-                    )
-
-                    # Iterate through the sessions in the SESSIONS keyring
-                    for session_key in sessions_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
-                        # Only process user keys (actual session data)
-                        if not hasattr(session_key, 'key_type') or session_key.key_type != 'user':
-                            continue
-                        try:
-                            # Read the session data from the key
-                            data = session_key.read_data()
-                            if len(data) == 4096:
-                                session = self._decode_session(session_key.description, data)
-                                yield session
-                        except Exception:
-                            # Skip malformed entries or inaccessible keys
-                            continue
+                    # Read the session data from the key
+                    data = session_key.read_data()
+                    session = self._decode_session(session_key.description, data)
+                    yield session
                 except Exception:
-                    # Skip if we can't access this user's SESSIONS keyring
-                    continue
-        except Exception:
-            # Error iterating keys
-            return
+                    # We can in theory have TOCTOU on key
+                    pass
 
     def get_sessions(self) -> list[PamSession]:
         """
@@ -349,6 +323,7 @@ class SessionIterator:
         for session in self.iterate():
             if session.session_id == session_id:
                 return session
+
         return None
 
     def get_sessions_by_username(self, username: str) -> list[PamSession]:
@@ -363,42 +338,29 @@ class SessionIterator:
         """
         sessions = []
 
-        if self.pam_keyring is None:
-            return sessions
+        # Try to directly access the username-specific keyring within PAM_TRUENAS
+        user_keyring = self.pam_keyring.search(
+            key_type=truenas_keyring.KeyType.KEYRING,
+            description=username
+        )
 
-        try:
-            # Try to directly access the username-specific keyring within PAM_TRUENAS
-            user_keyring = self.pam_keyring.search(
-                key_type=truenas_keyring.KeyType.KEYRING,
-                description=username
-            )
+        # Now find the SESSIONS keyring under this user
+        sessions_keyring = user_keyring.search(
+            key_type=truenas_keyring.KeyType.KEYRING,
+            description=PAM_SESSION_NAME
+        )
 
-            # Now find the SESSIONS keyring under this user
-            sessions_keyring = user_keyring.search(
-                key_type=truenas_keyring.KeyType.KEYRING,
-                description=PAM_SESSION_NAME
-            )
-
-            # Iterate through the sessions for this specific user
-            for session_key in sessions_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
-                # Only process user keys (actual session data)
-                if not hasattr(session_key, 'key_type') or session_key.key_type != 'user':
-                    continue
-                try:
-                    # Read the session data from the key
-                    data = session_key.read_data()
-                    if len(data) == 4096:
-                        session = self._decode_session(session_key.description, data)
-                        sessions.append(session)
-                except Exception:
-                    # Skip malformed entries or inaccessible keys
-                    continue
-        except Exception:
-            # Username keyring doesn't exist or can't be accessed
-            # Fall back to iterating all sessions and filtering
-            for session in self.iterate():
-                if session.username == username:
-                    sessions.append(session)
+        # Iterate through the sessions for this specific user
+        for session_key in sessions_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
+            try:
+                # Read the session data from the key
+                data = session_key.read_data()
+                session = self._decode_session(session_key.description, data)
+            except Exception:
+                # Skip malformed entries or inaccessible keys
+                continue
+            else:
+                sessions.append(session)
 
         return sessions
 

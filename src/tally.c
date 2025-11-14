@@ -18,6 +18,8 @@ key_serial_t get_faillog(pam_tn_ctx_t *ctx)
 	return keyring_get_tally(ctx->kr.user_kr);
 }
 
+#define NSEC_PER_SEC 1000000000
+
 /* Write a failure entry to the FAILLOG keyring for the current user
  * based on PAM items
  */
@@ -26,7 +28,7 @@ int write_tally(pam_tn_ctx_t *ctx)
 	int rv;
 	const char *source;
 	struct timespec now;
-	char desc[20];
+	char desc[42];
 	key_serial_t faillog, key_id;
 	long ret;
 	ptn_tally_t tally = {0};
@@ -64,8 +66,14 @@ int write_tally(pam_tn_ctx_t *ctx)
 		tally.flags |= TALLY_FLAG_RHOST;
 	}
 
+	// Ensure that tv_nsec is less than 1 sec.
+	while (now.tv_nsec > NSEC_PER_SEC) {
+		now.tv_sec += 1;
+		now.tv_nsec -= NSEC_PER_SEC;
+	}
+
 	strlcpy(tally.source, source, sizeof(tally.source));
-	snprintf(desc, sizeof(desc), "%lu", now.tv_sec);
+	snprintf(desc, sizeof(desc), "%lu.%llu", now.tv_sec, now.tv_nsec);
 
 	key_id = add_key("user", desc, &tally, sizeof(tally), faillog);
 	if (key_id == -1) {
@@ -217,7 +225,7 @@ int check_tally(pam_tn_ctx_t *ctx, bool *is_locked)
 		return PAM_SUCCESS;
 	}
 
-	for (i = 0; i < (bufsz / sizeof(key_serial_t)); i++) {
+	for (i = 0; i < total_keys; i++) {
 		long key_data_sz;
 		// Simply getting buffer size required is sufficient to
 		// determine whether a tally entry is expired

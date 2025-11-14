@@ -166,7 +166,7 @@ int _ptn_fill_keyring(pam_tn_ctx_t *ctx)
 	key_serial_t ukr;
 
 	/*
-	 * Retreive the username from the pam handle or
+	 * Retrieve the username from the pam handle or
 	 * initiate a PAM conversation to get the username
 	 */
 	retval = pam_get_user(ctx->pamh, &uname, NULL);
@@ -193,7 +193,7 @@ int _ptn_fill_keyring(pam_tn_ctx_t *ctx)
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "Set PAM_USER to: %s", uname);
 	ukr = ctx->kr.user_kr;
 
-	/* Now fill remaining keyring items */
+	/* Retrieve the user-specific keyring for API keys and sessions */
 	if (((ctx->kr.api_keys_kr = keyring_get_api_key_keyring(ukr)) == -1) ||
 	    ((ctx->kr.sessions_kr = keyring_get_session_keyring(ukr)) == -1)) {
 		PAM_CTX_DEBUG(ctx, LOG_DEBUG,

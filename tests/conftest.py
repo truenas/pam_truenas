@@ -83,3 +83,4 @@ def api_key_data(request):
 def pam_service():
     """Fixture providing the PAM service name for testing"""
     return "middleware"  # Using the middleware PAM service as specified
+

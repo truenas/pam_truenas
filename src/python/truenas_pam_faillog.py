@@ -102,9 +102,8 @@ class FaillogIterator:
         else:
             source_type = "UNKNOWN"
 
-        # Parse timestamp from key description (it's stored as seconds since epoch)
-        timestamp_sec = int(key_description)
-        timestamp = datetime.fromtimestamp(timestamp_sec)
+        # Parse timestamp from key description
+        timestamp = datetime.fromtimestamp(float(key_description))
 
         return FaillogEntry(
             timestamp=timestamp,
@@ -129,10 +128,6 @@ class FaillogIterator:
             unlink_revoked=True,
             unlink_expired=True
         ):
-            # Check if it's a keyring
-            if not hasattr(user_item, 'key'):
-                continue
-
             # Get the username from the keyring description
             username = user_item.key.description
             user_keyring = user_item
