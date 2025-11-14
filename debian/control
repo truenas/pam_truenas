@@ -1,0 +1,56 @@
+Source: pam-truenas
+Section: admin
+Priority: optional
+Maintainer: Andrew Walker <andrew.walker@truenas.com>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               autoconf,
+               automake,
+               libtool,
+               pkg-config,
+               libpam0g-dev,
+               libkeyutils-dev,
+               libjansson-dev,
+               uuid-dev,
+               libtruenas-scram-dev,
+               libtruenas-pwenc-dev,
+               python3-all,
+               python3-setuptools,
+               python3-build,
+               python3-installer
+Standards-Version: 4.6.0
+Homepage: https://github.com/truenas/pam_truenas
+
+Package: libpam-truenas
+Architecture: any
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         libpam0g,
+         libkeyutils1,
+         libjansson4,
+         libuuid1,
+         libtruenas-scram1,
+         libtruenas-pwenc1
+Description: PAM module for TrueNAS authentication
+ This PAM module provides SCRAM-SHA-512 authentication, session management,
+ and account security features for TrueNAS using the Linux kernel keyring.
+ .
+ Features include:
+  * SCRAM-SHA-512 challenge-response authentication
+  * API key authentication
+  * Session tracking and limiting
+
+Package: python3-truenas-pam-utils
+Section: python
+Architecture: all
+Depends: ${python3:Depends},
+         ${misc:Depends},
+         python3-truenas-pykeyring
+Description: Python utilities for TrueNAS PAM session management
+ This package provides Python utilities for managing PAM sessions and
+ faillog entries stored in the Linux kernel keyring.
+ .
+ Includes:
+  * Session iterator for enumerating active sessions
+  * Faillog iterator for viewing authentication failures
+  * Session statistics and management tools
