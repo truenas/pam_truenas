@@ -73,7 +73,7 @@ int write_tally(pam_tn_ctx_t *ctx)
 	}
 
 	strlcpy(tally.source, source, sizeof(tally.source));
-	snprintf(desc, sizeof(desc), "%lu.%llu", now.tv_sec, now.tv_nsec);
+	snprintf(desc, sizeof(desc), "%lu.%lu", now.tv_sec, now.tv_nsec);
 
 	key_id = add_key("user", desc, &tally, sizeof(tally), faillog);
 	if (key_id == -1) {
