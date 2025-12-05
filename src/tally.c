@@ -125,13 +125,14 @@ bool set_tally_lock(pam_tn_ctx_t *ctx)
 {
 	key_serial_t lck;
 	long rv;
+	const char dummy = 0;
 
 	if (ctx->kr.user_kr == 0) {
 		errno = EINVAL;
 		return false;
 	}
 
-	lck = add_key("user", TALLY_LOCK_KEY, NULL, 0, ctx->kr.user_kr);
+	lck = add_key("user", TALLY_LOCK_KEY, &dummy, 0, ctx->kr.user_kr);
 	if (lck == -1)
 		return false;
 
