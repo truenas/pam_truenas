@@ -316,6 +316,12 @@ int ptn_init_context(pam_handle_t *pamh,
 			free(r);
 			return PAM_AUTHINFO_UNAVAIL;
 		}
+	} else {
+		/*
+		 * This ensures that the current thread has persistent keyring access
+		 * If we don't then we will get hard-to-diagnose EACCES failures
+		 */
+		keyring_get_pam_keyring();
 	}
 
 	r->ctrl = ptn_pam_parse(pamh, flags, argc, argv, &r->max_sessions);
