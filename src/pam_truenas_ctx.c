@@ -13,7 +13,7 @@ void parse_max_session(const pam_handle_t *pamh,
 		       uint32_t *plimit)
 {
 	char *sep;
-	int ret;
+	bool ret;
 
 	if (plimit == NULL) {
 		/* Caller doesn't care about session limit */
@@ -28,8 +28,8 @@ void parse_max_session(const pam_handle_t *pamh,
 		return;
 	}
 
-	ret = ptn_parse_uint(sep++, plimit, USER_SESSIONS_MAX_VAL);
-	if (ret != PAM_SUCCESS) {
+	ret = ptn_parse_uint(sep + 1, plimit, USER_SESSIONS_MAX_VAL);
+	if (!ret) {
 		PAM_TRUENAS_DEBUG(pamh, flags, LOG_ERR,
 				  "%s: failed to parse max_sessions",
 				  parm);
@@ -239,7 +239,7 @@ uint32_t ptn_pam_parse(const pam_handle_t *pamh,
 			ctrl |= PAM_TRUENAS_AUTH_FAIL;
 		else if (!strcasecmp(*v, "authsucc"))
 			ctrl |= PAM_TRUENAS_AUTH_SUCC;
-		else if (!strcasecmp(*v, "max_sessions")) {
+		else if (!strncmp(*v, "max_sessions=", strlen("max_sessions="))) {
 			parse_max_session(pamh, ctrl, *v, psession_limit);
 			ctrl |= PAM_TRUENAS_CHECK_SESSION_LIMIT;
 		}
