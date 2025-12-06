@@ -125,14 +125,13 @@ bool set_tally_lock(pam_tn_ctx_t *ctx)
 {
 	key_serial_t lck;
 	long rv;
-	const char dummy = 0;
 
 	if (ctx->kr.user_kr == 0) {
 		errno = EINVAL;
 		return false;
 	}
 
-	lck = add_key("user", TALLY_LOCK_KEY, &dummy, 0, ctx->kr.user_kr);
+	lck = add_key("user", TALLY_LOCK_KEY, &ctx->session_info, sizeof(ctx->session_info), ctx->kr.user_kr);
 	if (lck == -1)
 		return false;
 
@@ -157,6 +156,13 @@ bool remove_tally_lock(pam_tn_ctx_t *ctx)
 
 	lck = keyctl_search(ctx->kr.user_kr, "user", TALLY_LOCK_KEY, 0);
 	if (lck == -1) {
+		if (errno == ENOKEY) {
+			/*
+			 * The tally lock key doesn't exist so we can treat it as
+			 * success since there's nothing to remove.
+			 */
+			return true;
+		}
 		return false;
 	}
 
