@@ -64,11 +64,12 @@ static int _pam_populate_auth_data(pam_tn_ctx_t *ctx, const char *canonical_user
 
 int ptn_process_tally(pam_tn_ctx_t *ctx)
 {
-	int retval = PAM_AUTH_ERR;
+	int retval;
 	bool is_locked;
 
+	retval = check_tally(ctx, &is_locked);
+
 	if (ctx->ctrl & PAM_TRUENAS_AUTH_SUCC) {
-		retval = check_tally(ctx, &is_locked);
 		if (retval != PAM_SUCCESS) {
 			PAM_CTX_DEBUG(ctx, LOG_ERR, "Failed to check tally status");
 			return retval;
@@ -89,6 +90,8 @@ int ptn_process_tally(pam_tn_ctx_t *ctx)
 		if (retval == PAM_SUCCESS) {
 			retval = PAM_AUTH_ERR;
 		}
+	} else {
+		retval = PAM_AUTH_ERR;
 	}
 
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s: %d\n",
