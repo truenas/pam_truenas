@@ -157,6 +157,13 @@ bool remove_tally_lock(pam_tn_ctx_t *ctx)
 
 	lck = keyctl_search(ctx->kr.user_kr, "user", TALLY_LOCK_KEY, 0);
 	if (lck == -1) {
+		if (errno == ENOKEY) {
+			/*
+			 * The tally lock key doesn't exist so we can treat it as
+			 * success since there's nothing to remove.
+			 */
+			return true;
+		}
 		return false;
 	}
 
