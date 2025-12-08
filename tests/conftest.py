@@ -4,35 +4,22 @@ import truenas_api_key
 import truenas_pypwenc
 import truenas_pyscram
 import truenas_keyring
+from truenas_pam_faillog import PamFaillog
 
 
 @pytest.fixture(autouse=True, scope="function")
 def clear_all_keyring_state():
     """Clear all keyring state (sessions, faillog, locks) before each test"""
     def cleanup():
+        # Use the improved PamFaillog.reset_tally() method to clear faillog and tally lock
+        faillog = PamFaillog()
+        faillog.reset_tally("bob")
+
+        # Still need to manually clear SESSION keyring as it's not handled by reset_tally
         try:
             persistent = truenas_keyring.get_persistent_keyring()
             pam_keyring = persistent.search(key_type="keyring", description="PAM_TRUENAS")
             bob_keyring = pam_keyring.search(key_type="keyring", description="bob")
-        except FileNotFoundError:
-            return
-
-        # Clear TALLY_LOCK if present
-        try:
-            lock_key = bob_keyring.search(key_type="user", description="tally_lock")
-            bob_keyring.unlink_key(lock_key.serial)
-        except (FileNotFoundError, truenas_keyring.KeyringError):
-            pass  # No lock to remove
-
-        # Clear FAILLOG keyring
-        try:
-            faillog = bob_keyring.search(key_type="keyring", description="FAILLOG")
-            faillog.clear()
-        except FileNotFoundError:
-            pass  # No faillog to clear
-
-        # Clear SESSION keyring
-        try:
             session = bob_keyring.search(key_type="keyring", description="SESSION")
             session.clear()
         except FileNotFoundError:

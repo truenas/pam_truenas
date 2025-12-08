@@ -6,7 +6,7 @@ import truenas_pypam
 import truenas_pyscram
 import truenas_keyring
 from truenas_authenticator import UserPamAuthenticator, AuthenticatorStage
-from truenas_pam_faillog import FaillogIterator, MAX_FAILURE
+from truenas_pam_faillog import PamFaillog, MAX_FAILURE
 
 
 def perform_failed_auth(api_key_data, pam_service="middleware-scram"):
@@ -164,9 +164,15 @@ def perform_successful_auth(api_key_data, pam_service="middleware-scram"):
 
 def get_faillog_count(username):
     """Get the current number of faillog entries for a user"""
-    faillog = FaillogIterator()
+    faillog = PamFaillog()
     failures = faillog.get_user_failures(username)
     return len(failures)
+
+
+def is_user_locked(username):
+    """Check if a user is currently tally-locked"""
+    faillog = PamFaillog()
+    return faillog.is_tally_locked(username)
 
 
 def test_tally_account_locking_after_max_failures(api_key_data):
@@ -193,6 +199,7 @@ def test_tally_account_locking_after_max_failures(api_key_data):
         assert failure_count == i + 1, f"Expected {i+1} failures, got {failure_count}"
 
     # Account should still be accessible (not locked yet)
+    assert not is_user_locked(username), "Account should not be locked before MAX_FAILURE"
     result = perform_successful_auth(api_key_data)
     assert result == truenas_pypam.PAMCode.PAM_SUCCESS, "Account should not be locked before MAX_FAILURE"
 
@@ -209,13 +216,22 @@ def test_tally_account_locking_after_max_failures(api_key_data):
     failure_count = get_faillog_count(username)
     assert failure_count == MAX_FAILURE, f"Expected {MAX_FAILURE} failures after lock, got {failure_count}"
 
-    # Now the account should be locked - even correct credentials should fail
+    # The tally lock is set on the NEXT authentication attempt when check_tally() detects MAX_FAILURE entries
+    # Try to authenticate (will fail and trigger check_tally which will set the lock)
     result = perform_successful_auth(api_key_data)
     assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR, "Account should be locked after MAX_FAILURE attempts"
+
+    # Now verify the account is marked as tally-locked
+    assert is_user_locked(username), "Account should be tally-locked after check_tally() detects MAX_FAILURE"
 
     # Faillog should still have MAX_FAILURE entries (not cleared when locked)
     failure_count = get_faillog_count(username)
     assert failure_count >= MAX_FAILURE, f"Faillog should maintain at least {MAX_FAILURE} entries when locked"
+
+    # Clean up the locked account
+    faillog = PamFaillog()
+    faillog.reset_tally(username)
+    assert not is_user_locked(username), "User should be unlocked after cleanup"
 
 
 def test_tally_faillog_cleared_on_success(api_key_data):
@@ -224,6 +240,7 @@ def test_tally_faillog_cleared_on_success(api_key_data):
 
     # Verify starting with clean slate
     assert get_faillog_count(username) == 0, "Should start with no failures"
+    assert not is_user_locked(username), "Should start unlocked"
 
     # Perform some failed authentications (but less than MAX_FAILURE)
     num_failures = MAX_FAILURE - 2
@@ -244,6 +261,7 @@ def test_tally_faillog_cleared_on_success(api_key_data):
     time.sleep(0.1)  # Small delay to ensure keyring is updated
     failure_count = get_faillog_count(username)
     assert failure_count == 0, "Faillog should be cleared after successful authentication"
+    assert not is_user_locked(username), "Account should remain unlocked after successful auth"
 
 
 def test_tally_multiple_users_independent(api_key_data):
@@ -262,17 +280,20 @@ def test_tally_multiple_users_independent(api_key_data):
     # Check failures for test user
     failure_count = get_faillog_count(username)
     assert failure_count == 2, f"Expected 2 failures for {username}, got {failure_count}"
+    assert not is_user_locked(username), "Account should not be locked with only 2 failures"
 
     # Check that other users don't have failures
     # (We can't actually test another user without their credentials,
     # but we can verify the API works correctly for non-existent users)
     other_user_failures = get_faillog_count("nonexistent_user")
     assert other_user_failures == 0, "Non-existent user should have no failures"
+    assert not is_user_locked("nonexistent_user"), "Non-existent user should not be locked"
 
     # Clean up - clear the test user's failures
     result = perform_successful_auth(api_key_data)
     assert result == truenas_pypam.PAMCode.PAM_SUCCESS
     assert get_faillog_count(username) == 0
+    assert not is_user_locked(username), "Account should be unlocked after successful auth"
 
 
 def test_tally_statistics(api_key_data):
@@ -283,7 +304,7 @@ def test_tally_statistics(api_key_data):
     assert get_faillog_count(username) == 0, "Should start with no failures"
 
     # Get initial statistics
-    faillog = FaillogIterator()
+    faillog = PamFaillog()
     stats = faillog.get_statistics()
     initial_total = stats['total_failures']
 
@@ -302,19 +323,96 @@ def test_tally_statistics(api_key_data):
     assert username in stats['users_with_failures']
     assert stats['users_with_failures'][username] == num_failures
     assert username not in stats['locked_users']  # Not locked with only 2 failures
+    assert not is_user_locked(username), "Should not be locked with only 2 failures"
 
     # Add one more failure to reach MAX_FAILURE
     result = perform_failed_auth(api_key_data)
     assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
     time.sleep(0.1)
 
+    # Trigger check_tally to set the lock by attempting another auth
+    result = perform_failed_auth(api_key_data)
+    assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
+
     # Check if user is now marked as locked
     stats = faillog.get_statistics()
     assert username in stats['locked_users'], f"User {username} should be locked after {MAX_FAILURE} failures"
+    assert is_user_locked(username), f"is_tally_locked() should confirm user {username} is locked"
 
-    # Clean up
-    # Note: Since the account is locked, we can't clean up with successful auth
-    # The failures will expire after FAIL_INTERVAL seconds
+    # Clean up using reset_tally since the account is locked
+    faillog.reset_tally(username)
+    assert not is_user_locked(username), "User should be unlocked after cleanup"
+
+
+def test_tally_locked_users(api_key_data):
+    """Test the tally_locked_users() method to get all locked users"""
+    username = api_key_data["username"]
+
+    # Verify clean state
+    assert get_faillog_count(username) == 0, "Should start with no failures"
+    assert not is_user_locked(username), "Should start unlocked"
+
+    # Get initial set of locked users
+    faillog = PamFaillog()
+    initial_locked = faillog.tally_locked_users()
+    assert username not in initial_locked, "User should not be in locked set initially"
+
+    # Lock the account by performing MAX_FAILURE failed authentications
+    for i in range(MAX_FAILURE):
+        result = perform_failed_auth(api_key_data)
+        assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
+        time.sleep(0.1)
+
+    # Trigger check_tally to set the lock by attempting another auth
+    result = perform_failed_auth(api_key_data)
+    assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
+
+    # Verify the user is now locked
+    assert is_user_locked(username), "User should be tally-locked"
+
+    # Check that the user appears in the locked users set
+    locked_users = faillog.tally_locked_users()
+    assert username in locked_users, f"User {username} should be in the set of locked users"
+
+    # Verify it's consistent with is_tally_locked()
+    for user in locked_users:
+        assert faillog.is_tally_locked(user), f"User {user} in locked set should be confirmed by is_tally_locked()"
+
+
+def test_reset_tally_method(api_key_data):
+    """Test the reset_tally() method to clear failures and unlock"""
+    username = api_key_data["username"]
+
+    # Verify clean state
+    assert get_faillog_count(username) == 0, "Should start with no failures"
+    assert not is_user_locked(username), "Should start unlocked"
+
+    # Lock the account by performing MAX_FAILURE failed authentications
+    for i in range(MAX_FAILURE):
+        result = perform_failed_auth(api_key_data)
+        assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
+        time.sleep(0.1)
+
+    # Trigger check_tally to set the lock by attempting another auth
+    result = perform_failed_auth(api_key_data)
+    assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
+
+    # Verify locked state
+    assert is_user_locked(username), "User should be tally-locked"
+    failure_count = get_faillog_count(username)
+    assert failure_count >= MAX_FAILURE, f"Should have at least {MAX_FAILURE} failures"
+
+    # Use reset_tally to clear everything
+    faillog = PamFaillog()
+    faillog.reset_tally(username)
+
+    # Verify the account is unlocked and failures cleared
+    assert not is_user_locked(username), "User should be unlocked after reset_tally()"
+    assert get_faillog_count(username) == 0, "Faillog should be cleared after reset_tally()"
+
+    # Verify successful authentication now works
+    result = perform_successful_auth(api_key_data)
+    assert result == truenas_pypam.PAMCode.PAM_SUCCESS, "Authentication should succeed after reset_tally()"
 
 
 def test_tally_failure_expiry():
@@ -322,7 +420,7 @@ def test_tally_failure_expiry():
     # This test would need to wait 15 minutes for entries to expire naturally
     # For practical testing, we'll just verify the mechanism exists
 
-    faillog = FaillogIterator()
+    faillog = PamFaillog()
 
     # The iterator has logic to handle expired entries
     # When iterating, it will automatically unlink expired entries
@@ -346,6 +444,7 @@ def test_tally_with_consecutive_successes(api_key_data):
 
     # Verify clean state
     assert get_faillog_count(username) == 0, "Should start with no failures"
+    assert not is_user_locked(username), "Should start unlocked"
 
     # Perform multiple successful authentications
     for i in range(3):
@@ -355,6 +454,7 @@ def test_tally_with_consecutive_successes(api_key_data):
         # Verify no failures are recorded
         failure_count = get_faillog_count(username)
         assert failure_count == 0, f"No failures should be recorded for successful auth"
+        assert not is_user_locked(username), "Account should remain unlocked"
 
 
 def test_tally_recovery_scenario(api_key_data):
@@ -373,6 +473,7 @@ def test_tally_recovery_scenario(api_key_data):
     # Verify we're at the threshold
     failure_count = get_faillog_count(username)
     assert failure_count == MAX_FAILURE - 1
+    assert not is_user_locked(username), "Should not be locked yet"
 
     # Recover with successful auth
     result = perform_successful_auth(api_key_data)
@@ -388,11 +489,21 @@ def test_tally_recovery_scenario(api_key_data):
         assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
         time.sleep(0.1)
 
+    # Trigger check_tally to set the lock by attempting another auth
+    result = perform_failed_auth(api_key_data)
+    assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
+
     # Verify locked
+    assert is_user_locked(username), "User should be tally-locked"
     result = perform_successful_auth(api_key_data)
     assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR, "Account should be locked"
 
-    # In a real scenario, admin would need to intervene or wait for FAIL_INTERVAL
-    # to expire. We'll verify the lock is persistent for now
+    # Verify the lock is persistent
     failure_count = get_faillog_count(username)
     assert failure_count >= MAX_FAILURE, "Lock should persist"
+
+    # In a real scenario, admin would need to intervene or wait for FAIL_INTERVAL
+    # to expire. For testing, we'll use reset_tally to clean up
+    faillog = PamFaillog()
+    faillog.reset_tally(username)
+    assert not is_user_locked(username), "User should be unlocked after reset_tally()"
