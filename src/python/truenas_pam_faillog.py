@@ -62,7 +62,11 @@ class PamFaillog:
     def __init__(self):
         """Initialize the faillog iterator"""
         self.pam_keyring = None
-        self._load_keyring()
+        try:
+            self._load_keyring()
+        except FileNotFoundError:
+            # keyring hasn't been created yet and so we can just lazy-initialize later
+            pass
 
     def _load_keyring(self) -> None:
         """Load the PAM_TRUENAS keyring"""
@@ -165,7 +169,11 @@ class PamFaillog:
 
     def __get_user_keyring(self, username: str):
         if not self.pam_keyring:
-            self._load_keyring()
+            try:
+                self._load_keyring()
+            except FileNotFoundError:
+                # PAM keyring hasn't been created yet so nothing to return
+                return None
 
         try:
             user_keyring = self.pam_keyring.search(
@@ -318,7 +326,12 @@ class PamFaillog:
         TRUENAS_PAM_KEYRING key descriptions contain the affected user's name. """
         locked_users = set()
         if not self.pam_keyring:
-            self._load_keyring()
+            try:
+                self._load_keyring()
+            except FileNotFoundError:
+                # We haven't had anyone authenticate yet and haven't generated any
+                # API keys
+                return locked_users
 
         try:
             pam_iter = self.pam_keyring.iter_keyring_contents(
