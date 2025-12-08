@@ -3,6 +3,46 @@ from base64 import b64encode, b64decode
 import truenas_api_key
 import truenas_pypwenc
 import truenas_pyscram
+import truenas_keyring
+
+
+@pytest.fixture(autouse=True, scope="function")
+def clear_all_keyring_state():
+    """Clear all keyring state (sessions, faillog, locks) before each test"""
+    def cleanup():
+        try:
+            persistent = truenas_keyring.get_persistent_keyring()
+            pam_keyring = persistent.search(key_type="keyring", description="PAM_TRUENAS")
+            bob_keyring = pam_keyring.search(key_type="keyring", description="bob")
+        except FileNotFoundError:
+            return
+
+        # Clear TALLY_LOCK if present
+        try:
+            lock_key = bob_keyring.search(key_type="user", description="tally_lock")
+            bob_keyring.unlink_key(lock_key.serial)
+        except (FileNotFoundError, truenas_keyring.KeyringError):
+            pass  # No lock to remove
+
+        # Clear FAILLOG keyring
+        try:
+            faillog = bob_keyring.search(key_type="keyring", description="FAILLOG")
+            faillog.clear()
+        except FileNotFoundError:
+            pass  # No faillog to clear
+
+        # Clear SESSION keyring
+        try:
+            session = bob_keyring.search(key_type="keyring", description="SESSION")
+            session.clear()
+        except FileNotFoundError:
+            pass  # No session to clear
+
+    # Clean before test
+    cleanup()
+    yield
+    # Clean after test
+    cleanup()
 
 
 def pytest_sessionstart(session):

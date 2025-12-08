@@ -9,32 +9,6 @@ from truenas_authenticator import UserPamAuthenticator, AuthenticatorStage
 from truenas_pam_faillog import FaillogIterator, MAX_FAILURE
 
 
-@pytest.fixture(autouse=True)
-def clear_faillog_before_test():
-    """Clear faillog before each test to ensure clean state"""
-    # Clear before test
-    try:
-        persistent = truenas_keyring.get_persistent_keyring()
-        pam_keyring = persistent.search(key_type="keyring", description="PAM_TRUENAS")
-        bob_keyring = pam_keyring.search(key_type="keyring", description="bob")
-        faillog = bob_keyring.search(key_type="keyring", description="FAILLOG")
-        faillog.clear()
-    except (FileNotFoundError, AttributeError):
-        pass  # No faillog to clear
-
-    yield  # Run the test
-
-    # Clear after test too
-    try:
-        persistent = truenas_keyring.get_persistent_keyring()
-        pam_keyring = persistent.search(key_type="keyring", description="PAM_TRUENAS")
-        bob_keyring = pam_keyring.search(key_type="keyring", description="bob")
-        faillog = bob_keyring.search(key_type="keyring", description="FAILLOG")
-        faillog.clear()
-    except (FileNotFoundError, AttributeError):
-        pass
-
-
 def perform_failed_auth(api_key_data, pam_service="middleware-scram"):
     """Helper to perform a failed authentication attempt"""
     auth = UserPamAuthenticator(
@@ -248,20 +222,11 @@ def test_tally_faillog_cleared_on_success(api_key_data):
     """Test that faillog is cleared after successful authentication"""
     username = api_key_data["username"]
 
-    # Clear any existing failures first
-    initial_count = get_faillog_count(username)
-    if initial_count > 0:
-        # Try to authenticate successfully to clear
-        result = perform_successful_auth(api_key_data)
-        if result != truenas_pypam.PAMCode.PAM_SUCCESS:
-            # Account might be locked, wait for entries to expire
-            pytest.skip("Account appears to be locked, skipping test")
-
     # Verify starting with clean slate
     assert get_faillog_count(username) == 0, "Should start with no failures"
 
     # Perform some failed authentications (but less than MAX_FAILURE)
-    num_failures = MAX_FAILURE - 1
+    num_failures = MAX_FAILURE - 2
     for i in range(num_failures):
         result = perform_failed_auth(api_key_data)
         assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
@@ -285,12 +250,8 @@ def test_tally_multiple_users_independent(api_key_data):
     """Test that tally tracking is independent per user"""
     username = api_key_data["username"]
 
-    # Clear any existing failures for our test user
-    initial_count = get_faillog_count(username)
-    if initial_count > 0:
-        result = perform_successful_auth(api_key_data)
-        if result != truenas_pypam.PAMCode.PAM_SUCCESS:
-            pytest.skip("Account appears to be locked, skipping test")
+    # Verify clean state
+    assert get_faillog_count(username) == 0, "Should start with no failures"
 
     # Add some failures for the test user
     for i in range(2):
@@ -318,12 +279,8 @@ def test_tally_statistics(api_key_data):
     """Test the faillog statistics functionality"""
     username = api_key_data["username"]
 
-    # Clear any existing failures
-    initial_count = get_faillog_count(username)
-    if initial_count > 0:
-        result = perform_successful_auth(api_key_data)
-        if result != truenas_pypam.PAMCode.PAM_SUCCESS:
-            pytest.skip("Account appears to be locked, skipping test")
+    # Verify clean state
+    assert get_faillog_count(username) == 0, "Should start with no failures"
 
     # Get initial statistics
     faillog = FaillogIterator()
@@ -387,12 +344,8 @@ def test_tally_with_consecutive_successes(api_key_data):
     """Test that consecutive successful authentications don't create issues"""
     username = api_key_data["username"]
 
-    # Clear any existing failures
-    initial_count = get_faillog_count(username)
-    if initial_count > 0:
-        result = perform_successful_auth(api_key_data)
-        if result != truenas_pypam.PAMCode.PAM_SUCCESS:
-            pytest.skip("Account appears to be locked, skipping test")
+    # Verify clean state
+    assert get_faillog_count(username) == 0, "Should start with no failures"
 
     # Perform multiple successful authentications
     for i in range(3):
@@ -408,13 +361,8 @@ def test_tally_recovery_scenario(api_key_data):
     """Test a complete lock and recovery scenario"""
     username = api_key_data["username"]
 
-    # Clear any existing failures
-    initial_count = get_faillog_count(username)
-    if initial_count > 0:
-        result = perform_successful_auth(api_key_data)
-        if result != truenas_pypam.PAMCode.PAM_SUCCESS:
-            # If locked, we need to wait or skip
-            pytest.skip("Account is locked, cannot test recovery scenario")
+    # Verify clean state
+    assert get_faillog_count(username) == 0, "Should start with no failures"
 
     # Scenario 1: Almost lock the account
     for i in range(MAX_FAILURE - 1):
