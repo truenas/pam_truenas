@@ -253,15 +253,13 @@ def test_tally_faillog_cleared_on_success(api_key_data):
     if initial_count > 0:
         # Try to authenticate successfully to clear
         result = perform_successful_auth(api_key_data)
-        if result != truenas_pypam.PAMCode.PAM_SUCCESS:
-            # Account might be locked, wait for entries to expire
-            pytest.skip("Account appears to be locked, skipping test")
+        assert result == truenas_pypam.PAMCode.PAM_SUCCESS:
 
     # Verify starting with clean slate
     assert get_faillog_count(username) == 0, "Should start with no failures"
 
     # Perform some failed authentications (but less than MAX_FAILURE)
-    num_failures = MAX_FAILURE - 1
+    num_failures = MAX_FAILURE - 2
     for i in range(num_failures):
         result = perform_failed_auth(api_key_data)
         assert result == truenas_pypam.PAMCode.PAM_AUTH_ERR
