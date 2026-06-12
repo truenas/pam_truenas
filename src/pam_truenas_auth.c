@@ -406,41 +406,55 @@ int _ptn_verify_client_final(pam_tn_ctx_t *pam_ctx,
 	scram_error_t error;
 	crypto_datum_t *skey = &pam_ctx->json_auth_data.scram_data.stored_key;
 	crypto_datum_t binding = {0};
+	unsigned char binding_buf[PAM_SCRAM_BINDING_MAX] = {0};
+	size_t binding_len = 0;
 	bool have_binding = false;
 	bool require_cb = (pam_ctx->ctrl & PAM_TRUENAS_REQUIRE_CB) != 0;
 
 	/*
 	 * SCRAM-PLUS channel binding (RFC 5929 tls-server-end-point). The binding is
-	 * a deterministic hash of the server's leaf certificate, so by default we read
-	 * the precomputed value that middlewared keeps in the persistent keyring:
-	 * pam_truenas parses no certificate and the source stays trusted (the kernel
-	 * keyring, not the relay). "scram_plus_cert=<path>" overrides this to read and
-	 * hash a PEM file instead (dev/test); "truenas_keyring" is the explicit default.
+	 * a deterministic hash of the server's leaf certificate, bounded by a SHA-512
+	 * digest, so it is read into a fixed stack buffer rather than the heap. By
+	 * default the value comes from the persistent keyring, which middlewared
+	 * populates from the active TLS cert; "scram_plus_cert=<path>"
+	 * overrides this to read and hash a PEM file instead (dev/test).
 	 */
 	if (pam_ctx->scram_plus_cert &&
 	    strcmp(pam_ctx->scram_plus_cert, SCRAM_PLUS_CERT_KEYRING) != 0) {
 		char *pem = NULL;
 		size_t pem_len = 0;
+		crypto_datum_t computed = {0};
 
 		if (_ptn_read_file(pam_ctx->scram_plus_cert, &pem, &pem_len) == 0) {
 			ret = scram_compute_tls_server_end_point_from_pem(pem, pem_len,
-									  &binding, &error);
+									  &computed, &error);
 			free(pem);
-			if (ret == SCRAM_E_SUCCESS) {
+			if (ret == SCRAM_E_SUCCESS &&
+			    computed.size <= sizeof(binding_buf)) {
+				/* Copy the lib-allocated datum into our fixed buffer. */
+				memcpy(binding_buf, computed.data, computed.size);
+				binding_len = computed.size;
 				have_binding = true;
+			} else if (ret == SCRAM_E_SUCCESS) {
+				PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
+					      "Channel binding from %s is %zu bytes (max %d)",
+					      pam_ctx->scram_plus_cert, computed.size,
+					      PAM_SCRAM_BINDING_MAX);
 			} else {
 				PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
 					      "Failed to compute channel binding from %s: (%s)",
 					      pam_ctx->scram_plus_cert, error.message);
 			}
+			crypto_datum_clear(&computed, false);
 		} else {
 			PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
 				      "Failed to read channel-binding certificate '%s'",
 				      pam_ctx->scram_plus_cert);
 		}
 	} else {
-		int kret = load_server_channel_binding(&binding);
-
+		int kret = load_server_channel_binding(binding_buf,
+						       sizeof(binding_buf),
+						       &binding_len);
 		if (kret == 0) {
 			have_binding = true;
 		} else if (kret != -ENOENT) {
@@ -451,12 +465,21 @@ int _ptn_verify_client_final(pam_tn_ctx_t *pam_ctx,
 		/* -ENOENT: middlewared has published no binding -> none available. */
 	}
 
-	/* Channel binding is mandatory but unavailable -> fail closed. */
+	if (have_binding) {
+		binding.data = binding_buf;
+		binding.size = binding_len;
+	}
+
+	/*
+	 * channel_binding=require but no binding to enforce -> fail closed with a
+	 * clear operator signal. A "p" client with no binding is rejected by the
+	 * library itself (RFC 5802 Section 6: the server MUST validate the client's
+	 * c=, which it cannot without a binding), so it needs no handling here.
+	 */
 	if (!have_binding && require_cb) {
 		PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
 			      "channel_binding=require but no channel binding is "
 			      "available -- rejecting authentication");
-		crypto_datum_clear(&binding, false);
 		return PAM_AUTH_ERR;
 	}
 
@@ -467,8 +490,6 @@ int _ptn_verify_client_final(pam_tn_ctx_t *pam_ctx,
 						   have_binding ? &binding : NULL,
 						   require_cb,
 						   &error);
-
-	crypto_datum_clear(&binding, false);
 
 	if (ret != SCRAM_E_SUCCESS) {
 		PAM_CTX_DEBUG(pam_ctx, LOG_ERR,

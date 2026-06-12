@@ -126,10 +126,13 @@ def _first_secret(reason):
     return next(m.msg for m in reason if m.msg_style == ECHO_OFF)
 
 
-def _drive_to_final(api_key_data, *, gs2_header, channel_binding):
+def _drive_to_final(api_key_data, *, channel_binding_type, channel_binding):
     """Run init -> client-first -> client-final; return the client-final PAMCode.
 
-    On success pam_truenas replies with the server-final (PAM_CONV_AGAIN); on a
+    channel_binding_type builds the gs2 'p=<type>' header via the library (None
+    yields a plain 'n' client). We let truenas_pyscram format the header rather
+    than hand-writing it, so the cbind-input ',,' separator is always correct. On
+    success pam_truenas replies with the server-final (PAM_CONV_AGAIN); on a
     binding/proof failure it returns PAM_AUTH_ERR.
     """
     auth = UserPamAuthenticator(
@@ -138,8 +141,8 @@ def _drive_to_final(api_key_data, *, gs2_header, channel_binding):
     assert resp.code == truenas_pypam.PAMCode.PAM_CONV_AGAIN
 
     cf_kwargs = {"username": api_key_data["username"], "api_key_id": api_key_data["id"]}
-    if gs2_header is not None:
-        cf_kwargs["gs2_header"] = gs2_header
+    if channel_binding_type is not None:
+        cf_kwargs["channel_binding_type"] = channel_binding_type
     cf = truenas_pyscram.ClientFirstMessage(**cf_kwargs)
 
     resp = auth.auth_continue(_answer(resp.reason, str(cf)))
@@ -169,21 +172,21 @@ def _expect_unbound(mode):
 
 def test_keyring_matching_binding(api_key_data, cb_keyring):
     """A 'p' client whose binding matches the keyring slot is verified (both modes)."""
-    code = _drive_to_final(api_key_data, gs2_header="p=tls-server-end-point,,",
+    code = _drive_to_final(api_key_data, channel_binding_type=truenas_pyscram.CB_TLS_SERVER_END_POINT,
                            channel_binding=cb_keyring["binding"])
     assert code == truenas_pypam.PAMCode.PAM_CONV_AGAIN
 
 
 def test_keyring_mismatched_binding_rejected(api_key_data, cb_keyring):
     """A 'p' client binding to a DIFFERENT cert (a re-terminating MITM) is rejected."""
-    code = _drive_to_final(api_key_data, gs2_header="p=tls-server-end-point,,",
+    code = _drive_to_final(api_key_data, channel_binding_type=truenas_pyscram.CB_TLS_SERVER_END_POINT,
                            channel_binding=truenas_pyscram.CryptoDatum(b"\x00" * 32))
     assert code == truenas_pypam.PAMCode.PAM_AUTH_ERR
 
 
 def test_keyring_unbound_client_policy(api_key_data, cb_keyring):
     """An 'n' client is allowed under negotiate, rejected under require."""
-    code = _drive_to_final(api_key_data, gs2_header=None, channel_binding=None)
+    code = _drive_to_final(api_key_data, channel_binding_type=None, channel_binding=None)
     assert code == _expect_unbound(cb_keyring["mode"])
 
 
@@ -191,14 +194,14 @@ def test_keyring_unbound_client_policy(api_key_data, cb_keyring):
 
 def test_file_override_matching_binding(api_key_data, cb_file):
     """The file source is used in place of the keyring when a path is given."""
-    code = _drive_to_final(api_key_data, gs2_header="p=tls-server-end-point,,",
+    code = _drive_to_final(api_key_data, channel_binding_type=truenas_pyscram.CB_TLS_SERVER_END_POINT,
                            channel_binding=cb_file["binding"])
     assert code == truenas_pypam.PAMCode.PAM_CONV_AGAIN
 
 
 def test_file_override_unbound_client_policy(api_key_data, cb_file):
     """Policy applies identically when the binding comes from a file."""
-    code = _drive_to_final(api_key_data, gs2_header=None, channel_binding=None)
+    code = _drive_to_final(api_key_data, channel_binding_type=None, channel_binding=None)
     assert code == _expect_unbound(cb_file["mode"])
 
 
@@ -210,7 +213,7 @@ def test_sentinel_selects_keyring_source(api_key_data):
     _set_keyring_binding(binding)
     _write_pam_service("scram_plus_cert=truenas_keyring channel_binding=negotiate")
     try:
-        code = _drive_to_final(api_key_data, gs2_header="p=tls-server-end-point,,",
+        code = _drive_to_final(api_key_data, channel_binding_type=truenas_pyscram.CB_TLS_SERVER_END_POINT,
                                channel_binding=binding)
         assert code == truenas_pypam.PAMCode.PAM_CONV_AGAIN
     finally:
@@ -221,7 +224,7 @@ def test_no_binding_negotiate_allows_unbound(api_key_data):
     """No keyring slot + negotiate: channel binding is off, plain SCRAM succeeds."""
     _write_pam_service("channel_binding=negotiate")
     try:
-        code = _drive_to_final(api_key_data, gs2_header=None, channel_binding=None)
+        code = _drive_to_final(api_key_data, channel_binding_type=None, channel_binding=None)
         assert code == truenas_pypam.PAMCode.PAM_CONV_AGAIN
     finally:
         os.unlink(PAM_SERVICE_PATH)
@@ -231,7 +234,36 @@ def test_no_binding_require_fails_closed(api_key_data):
     """No keyring slot + require: nothing to bind against, so authentication fails."""
     _write_pam_service("channel_binding=require")
     try:
-        code = _drive_to_final(api_key_data, gs2_header=None, channel_binding=None)
+        code = _drive_to_final(api_key_data, channel_binding_type=None, channel_binding=None)
         assert code == truenas_pypam.PAMCode.PAM_AUTH_ERR
+    finally:
+        os.unlink(PAM_SERVICE_PATH)
+
+
+def test_no_binding_rejects_bound_client(api_key_data):
+    """No keyring slot + negotiate: a 'p' client that demands binding is rejected,
+    not accepted unverified (no silent MITM window during a binding gap)."""
+    _write_pam_service("channel_binding=negotiate")
+    try:
+        code = _drive_to_final(
+            api_key_data,
+            channel_binding_type=truenas_pyscram.CB_TLS_SERVER_END_POINT,
+            channel_binding=truenas_pyscram.CryptoDatum(b"\x11" * 32))
+        assert code == truenas_pypam.PAMCode.PAM_AUTH_ERR
+    finally:
+        os.unlink(PAM_SERVICE_PATH)
+
+
+def test_empty_scram_plus_cert_uses_keyring(api_key_data):
+    """scram_plus_cert= with no value falls back to the keyring, not a literal '' path."""
+    _, binding = _new_cert_and_binding()
+    _set_keyring_binding(binding)
+    _write_pam_service("scram_plus_cert= channel_binding=negotiate")
+    try:
+        code = _drive_to_final(
+            api_key_data,
+            channel_binding_type=truenas_pyscram.CB_TLS_SERVER_END_POINT,
+            channel_binding=binding)
+        assert code == truenas_pypam.PAMCode.PAM_CONV_AGAIN
     finally:
         os.unlink(PAM_SERVICE_PATH)

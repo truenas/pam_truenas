@@ -45,10 +45,11 @@ int load_server_auth_data_from_keyring(pam_tn_ctx_t *pam_ctx,
 
 /*
  * Load the server-wide SCRAM channel binding (precomputed tls-server-end-point
- * value) that middlewared stores in the uid=0 persistent keyring. Returns 0 and
- * fills *binding_out (caller releases it with crypto_datum_clear) when the slot
- * exists, -ENOENT when it is absent, or another -errno on a read failure.
+ * value) that middlewared stores in the uid=0 persistent keyring, reading it
+ * into the caller's fixed buffer (the value is at most a SHA-512 digest).
+ * Returns 0 with the length in *out_len when the slot exists, -ENOENT when it is
+ * absent, or another -errno on a read failure.
  */
-int load_server_channel_binding(crypto_datum_t *binding_out);
+int load_server_channel_binding(unsigned char *buf, size_t buflen, size_t *out_len);
 
 #endif /* _KEYRING_H_ */

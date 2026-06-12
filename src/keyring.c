@@ -261,17 +261,16 @@ static int get_encrypted_user_data(key_serial_t api_keys_kr,
  * Its integrity rests on the kernel keyring's access control -- host
  * keyring-namespace access is the trust boundary.
  *
- * Returns 0 and fills *binding_out (caller releases it with crypto_datum_clear)
- * when the slot exists, -ENOENT when it is absent, or another -errno on a read
- * failure.
+ * Returns 0 with the length in *out_len when the slot exists, -ENOENT when it is
+ * absent, or another -errno on a read failure. The caller passes a fixed buffer
+ * (the value is at most a SHA-512 digest), so no allocation happens here.
  */
-int load_server_channel_binding(crypto_datum_t *binding_out)
+int load_server_channel_binding(unsigned char *buf, size_t buflen, size_t *out_len)
 {
 	key_serial_t pkey, bind_key;
-	unsigned char *buf;
 	long key_size;
 
-	if (binding_out == NULL) {
+	if ((buf == NULL) || (out_len == NULL)) {
 		return -EINVAL;
 	}
 
@@ -287,24 +286,16 @@ int load_server_channel_binding(crypto_datum_t *binding_out)
 	}
 
 	/*
-	 * The binding is at most a SHA-512 digest, so allocate that bound and read
-	 * straight into it in one call. keyctl_read() returns the full payload size
-	 * even when it exceeds the buffer, so a larger value means a malformed
-	 * binding and is rejected rather than used truncated.
+	 * Read straight into the caller's fixed buffer. keyctl_read() returns the
+	 * full payload size even when it exceeds the buffer, so a larger value means
+	 * a malformed binding and is rejected rather than used truncated.
 	 */
-	buf = calloc(1, PAM_SCRAM_BINDING_MAX);
-	if (buf == NULL) {
-		return -ENOMEM;
-	}
-
-	key_size = keyctl_read(bind_key, (char *)buf, PAM_SCRAM_BINDING_MAX);
-	if ((key_size <= 0) || (key_size > PAM_SCRAM_BINDING_MAX)) {
-		free(buf);
+	key_size = keyctl_read(bind_key, (char *)buf, buflen);
+	if ((key_size <= 0) || (key_size > (long)buflen)) {
 		return -EIO;
 	}
 
-	binding_out->data = buf;
-	binding_out->size = (size_t)key_size;
+	*out_len = (size_t)key_size;
 	return 0;
 }
 

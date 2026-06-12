@@ -131,8 +131,10 @@ not secret. Its integrity rests on the kernel keyring's access control, which
 makes host keyring-namespace access the boundary: a privileged container that
 shares it (host UID 0, not its own user namespace) could tamper with this binding
 -- and with `PAM_TRUENAS` itself (API keys, sessions, faillock). Keep such
-workloads in their own user namespace; `channel_binding=require` at least makes a
-deleted binding fail closed rather than silently disabling it.
+workloads in their own user namespace. When no binding is available -- deletion,
+or a boot/rotation gap -- a client that requests channel binding is rejected
+(under `negotiate` as well as `require`) rather than accepted without
+verification; only non-binding clients are still admitted under `negotiate`.
 
 ### pam_sm_open_session / pam_sm_close_session
 

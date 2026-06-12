@@ -259,8 +259,13 @@ uint32_t ptn_pam_parse(const pam_handle_t *pamh,
 						  "defaulting to negotiate", mode);
 		}
 		else if (!strncmp(*v, "scram_plus_cert=", strlen("scram_plus_cert="))) {
-			if (pscram_plus_cert) {
-				*pscram_plus_cert = *v + strlen("scram_plus_cert=");
+			const char *path = *v + strlen("scram_plus_cert=");
+			/*
+			 * An empty value is treated as unset (keyring default), not a
+			 * literal "" path that would fail fopen() on every auth.
+			 */
+			if (pscram_plus_cert && (*path != '\0')) {
+				*pscram_plus_cert = path;
 			}
 		}
 	}
@@ -357,7 +362,20 @@ int ptn_init_context(pam_handle_t *pamh,
 	 * file path overrides this to read and hash a PEM (dev/test).
 	 */
 	free(r->scram_plus_cert);
-	r->scram_plus_cert = scram_plus_cert ? strdup(scram_plus_cert) : NULL;
+	r->scram_plus_cert = NULL;
+	if (scram_plus_cert != NULL) {
+		r->scram_plus_cert = strdup(scram_plus_cert);
+		if (r->scram_plus_cert == NULL) {
+			/*
+			 * Only free here when we created the context; a cached
+			 * context is owned by PAM and released via the cleanup cb.
+			 */
+			if (created) {
+				ptn_cleanup_context(r);
+			}
+			return PAM_BUF_ERR;
+		}
+	}
 
 	/*
 	 * Check environment variables for additional configuration if enabled
@@ -393,7 +411,7 @@ int ptn_init_context(pam_handle_t *pamh,
 		 */
 		ret = _ptn_fill_keyring(r);
 		if (ret != PAM_SUCCESS) {
-			free(r);
+			ptn_cleanup_context(r);
 			return ret;
 		}
 
@@ -407,7 +425,7 @@ int ptn_init_context(pam_handle_t *pamh,
 			PAM_CTX_DEBUG(r, LOG_ERR,
 				      "%d: failed to set pam module data.",
 				      ret);
-			free(r);
+			ptn_cleanup_context(r);
 			return ret;
 		}
 	}
