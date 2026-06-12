@@ -60,6 +60,7 @@ sudo dpkg -i ../libpam-truenas_*.deb ../python3-truenas-pam-utils_*.deb
 
 Main authentication function supporting:
 - SCRAM-SHA-512 challenge-response
+- SCRAM-PLUS channel binding (`channel_binding=`)
 - Password/API key fallback (with `allow_password_auth`)
 - Faillock tally management (with `authsucc`/`authfail`)
 
@@ -72,6 +73,16 @@ Main authentication function supporting:
 - `use_env_config` - Read config from PAM environment
 - `authsucc` - Reset tally on success
 - `authfail` - Increment tally on failure
+- `scram_plus_cert=<source>` - Channel-binding certificate source for RFC 5929
+  `tls-server-end-point`. Default `truenas_keyring`: read the precomputed binding
+  from the persistent keyring (published by middlewared from the active TLS
+  cert). A file path (e.g. `/etc/certificates/active.crt`) overrides this to read
+  and hash a PEM instead (dev/test)
+- `channel_binding=negotiate|require` - Channel-binding policy (default
+  `negotiate`): `negotiate` enforces the binding for clients that use it and
+  allows those that don't; `require` rejects clients that don't bind. Binding is
+  active whenever one is available (keyring slot present or a cert path given);
+  `require` fails closed when none is
 
 **Basic authentication:**
 ```
@@ -94,6 +105,34 @@ auth    [default=done]                pam_truenas.so authfail
 # Check tally and reset on success
 auth    required                      pam_truenas.so authsucc
 ```
+
+**SCRAM-PLUS channel binding:**
+
+The binding must come from the certificate that terminates the client's TLS
+connection. By default pam_truenas reads the precomputed binding from the uid=0
+persistent keyring, which middlewared publishes from the active TLS certificate
+-- so no path needs to be configured. Requires `libtruenas-scram` >= 0.2.0.
+
+```
+# Negotiated (default source = keyring): bind clients that use channel
+# binding, allow those that don't
+auth    required    pam_truenas.so channel_binding=negotiate
+
+# Mandatory: reject clients that don't channel-bind
+auth    required    pam_truenas.so channel_binding=require
+
+# Override the source with a PEM file instead of the keyring (dev/test)
+auth    required    pam_truenas.so scram_plus_cert=/etc/certificates/active.crt
+```
+
+**Trust boundary:** the keyring binding is stored in the clear -- it is a hash of
+the server's public leaf certificate (served in every TLS handshake), so it is
+not secret. Its integrity rests on the kernel keyring's access control, which
+makes host keyring-namespace access the boundary: a privileged container that
+shares it (host UID 0, not its own user namespace) could tamper with this binding
+-- and with `PAM_TRUENAS` itself (API keys, sessions, faillock). Keep such
+workloads in their own user namespace; `channel_binding=require` at least makes a
+deleted binding fail closed rather than silently disabling it.
 
 ### pam_sm_open_session / pam_sm_close_session
 
@@ -149,6 +188,7 @@ API keys are identified by database ID:
 Keys are stored encrypted in the kernel keyring hierarchy:
 ```
 persistent-keyring:uid=0
+├── TRUENAS_SCRAM_PLUS_SERVER_BINDING (user key: SCRAM-PLUS channel binding)
 └── PAM_TRUENAS
     └── username
         ├── API_KEYS

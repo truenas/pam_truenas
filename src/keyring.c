@@ -246,6 +246,69 @@ static int get_encrypted_user_data(key_serial_t api_keys_kr,
 }
 
 /*
+ * Load the server-wide SCRAM channel binding that middlewared stores as a
+ * "user" key (PAM_SCRAM_BINDING_NAME) directly in the uid=0 persistent keyring.
+ * It lives there -- a sibling of the PAM_TRUENAS keyring -- rather than inside
+ * PAM_TRUENAS, whose children are per-user keyrings, so a single server-wide
+ * value is not confused with a username.
+ *
+ * The payload is the precomputed RFC 5929 tls-server-end-point value (raw digest
+ * bytes), so pam_truenas neither reads the certificate nor parses PEM at
+ * authentication time.
+ *
+ * The value is stored in the clear on purpose: it is a hash of the server's
+ * public leaf certificate (served in every TLS handshake), so it is not secret.
+ * Its integrity rests on the kernel keyring's access control -- host
+ * keyring-namespace access is the trust boundary.
+ *
+ * Returns 0 and fills *binding_out (caller releases it with crypto_datum_clear)
+ * when the slot exists, -ENOENT when it is absent, or another -errno on a read
+ * failure.
+ */
+int load_server_channel_binding(crypto_datum_t *binding_out)
+{
+	key_serial_t pkey, bind_key;
+	unsigned char *buf;
+	long key_size;
+
+	if (binding_out == NULL) {
+		return -EINVAL;
+	}
+
+	pkey = keyctl_get_persistent(0, KEY_SPEC_PROCESS_KEYRING);
+	if (pkey == -1) {
+		return -errno;
+	}
+
+	bind_key = keyctl_search(pkey, "user", PAM_SCRAM_BINDING_NAME, 0);
+	if (bind_key == -1) {
+		/* ENOKEY simply means middlewared has not published a binding. */
+		return (errno == ENOKEY) ? -ENOENT : -errno;
+	}
+
+	/*
+	 * The binding is at most a SHA-512 digest, so allocate that bound and read
+	 * straight into it in one call. keyctl_read() returns the full payload size
+	 * even when it exceeds the buffer, so a larger value means a malformed
+	 * binding and is rejected rather than used truncated.
+	 */
+	buf = calloc(1, PAM_SCRAM_BINDING_MAX);
+	if (buf == NULL) {
+		return -ENOMEM;
+	}
+
+	key_size = keyctl_read(bind_key, (char *)buf, PAM_SCRAM_BINDING_MAX);
+	if ((key_size <= 0) || (key_size > PAM_SCRAM_BINDING_MAX)) {
+		free(buf);
+		return -EIO;
+	}
+
+	binding_out->data = buf;
+	binding_out->size = (size_t)key_size;
+	return 0;
+}
+
+/*
  * This function loads server authentication data from the PAM_TRUENAS keyring
  * based on populated authentication data in the pam_authenticate call (specifically
  * the PAM_USER set when initializing the context).

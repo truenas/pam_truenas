@@ -355,6 +355,47 @@ int _ptn_get_client_final(pam_tn_ctx_t *pam_ctx,
 	return retval;
 }
 
+/*
+ * Read a (small) file -- e.g. a PEM certificate -- into a fresh buffer.
+ * Returns 0 on success; the caller frees *buf_out.
+ */
+static int _ptn_read_file(const char *path, char **buf_out, size_t *len_out)
+{
+	FILE *f = NULL;
+	long sz = 0;
+	char *buf = NULL;
+	size_t rd = 0;
+
+	f = fopen(path, "rb");
+	if (!f) {
+		return -1;
+	}
+	if (fseek(f, 0, SEEK_END) != 0 || (sz = ftell(f)) < 0 ||
+	    fseek(f, 0, SEEK_SET) != 0) {
+		fclose(f);
+		return -1;
+	}
+	/* sanity bound: a certificate file is small */
+	if (sz <= 0 || sz > (1 << 20)) {
+		fclose(f);
+		return -1;
+	}
+	buf = malloc((size_t)sz);
+	if (!buf) {
+		fclose(f);
+		return -1;
+	}
+	rd = fread(buf, 1, (size_t)sz, f);
+	fclose(f);
+	if (rd != (size_t)sz) {
+		free(buf);
+		return -1;
+	}
+	*buf_out = buf;
+	*len_out = (size_t)sz;
+	return 0;
+}
+
 static
 int _ptn_verify_client_final(pam_tn_ctx_t *pam_ctx,
 			     scram_client_first_t *cfirst,
@@ -364,12 +405,70 @@ int _ptn_verify_client_final(pam_tn_ctx_t *pam_ctx,
 	scram_resp_t ret;
 	scram_error_t error;
 	crypto_datum_t *skey = &pam_ctx->json_auth_data.scram_data.stored_key;
+	crypto_datum_t binding = {0};
+	bool have_binding = false;
+	bool require_cb = (pam_ctx->ctrl & PAM_TRUENAS_REQUIRE_CB) != 0;
 
-	ret = scram_verify_client_final_message(cfirst,
-						sfirst,
-						cfinal,
-						skey,
-						&error);
+	/*
+	 * SCRAM-PLUS channel binding (RFC 5929 tls-server-end-point). The binding is
+	 * a deterministic hash of the server's leaf certificate, so by default we read
+	 * the precomputed value that middlewared keeps in the persistent keyring:
+	 * pam_truenas parses no certificate and the source stays trusted (the kernel
+	 * keyring, not the relay). "scram_plus_cert=<path>" overrides this to read and
+	 * hash a PEM file instead (dev/test); "truenas_keyring" is the explicit default.
+	 */
+	if (pam_ctx->scram_plus_cert &&
+	    strcmp(pam_ctx->scram_plus_cert, SCRAM_PLUS_CERT_KEYRING) != 0) {
+		char *pem = NULL;
+		size_t pem_len = 0;
+
+		if (_ptn_read_file(pam_ctx->scram_plus_cert, &pem, &pem_len) == 0) {
+			ret = scram_compute_tls_server_end_point_from_pem(pem, pem_len,
+									  &binding, &error);
+			free(pem);
+			if (ret == SCRAM_E_SUCCESS) {
+				have_binding = true;
+			} else {
+				PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
+					      "Failed to compute channel binding from %s: (%s)",
+					      pam_ctx->scram_plus_cert, error.message);
+			}
+		} else {
+			PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
+				      "Failed to read channel-binding certificate '%s'",
+				      pam_ctx->scram_plus_cert);
+		}
+	} else {
+		int kret = load_server_channel_binding(&binding);
+
+		if (kret == 0) {
+			have_binding = true;
+		} else if (kret != -ENOENT) {
+			PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
+				      "Failed to read channel binding from keyring: %s",
+				      strerror(-kret));
+		}
+		/* -ENOENT: middlewared has published no binding -> none available. */
+	}
+
+	/* Channel binding is mandatory but unavailable -> fail closed. */
+	if (!have_binding && require_cb) {
+		PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
+			      "channel_binding=require but no channel binding is "
+			      "available -- rejecting authentication");
+		crypto_datum_clear(&binding, false);
+		return PAM_AUTH_ERR;
+	}
+
+	ret = scram_verify_client_final_message_cb(cfirst,
+						   sfirst,
+						   cfinal,
+						   skey,
+						   have_binding ? &binding : NULL,
+						   require_cb,
+						   &error);
+
+	crypto_datum_clear(&binding, false);
 
 	if (ret != SCRAM_E_SUCCESS) {
 		PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
