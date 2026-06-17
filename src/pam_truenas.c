@@ -203,15 +203,18 @@ int pam_sm_setcred(pam_handle_t *pamh, int flags,
 
 	retval = ptn_init_context(pamh, flags, argc, argv,
 				  PAM_TRUENAS_SETCRED, &created, &ctx);
+	if (retval != PAM_SUCCESS) {
+		/*
+		 * ptn_init_context() leaves ctx NULL on every failure path, so
+		 * there is nothing to debug-log against here: PAM_CTX_DEBUG()
+		 * dereferences ctx unconditionally and would crash. The failure
+		 * itself is already logged inside ptn_init_context().
+		 */
+		return PAM_IGNORE;
+	}
 
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] ENTER: %s\n",
 		      pamh, "pam_sm_setcred");
-
-	if (retval != PAM_SUCCESS) {
-		PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",
-			      pamh, "pam_sm_setcred");
-		return PAM_IGNORE;
-	}
 
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",
 		      pamh, "pam_sm_setcred");
@@ -256,15 +259,14 @@ int pam_sm_open_session(pam_handle_t *pamh, int flags,
 
 	retval = ptn_init_context(pamh, flags, argc, argv,
 				  PAM_TRUENAS_OPEN_SESSION, &created, &ctx);
+	if (retval != PAM_SUCCESS) {
+		/* ctx is NULL on every init-failure path; PAM_CTX_DEBUG() would
+		 * dereference NULL. See pam_sm_setcred for the full rationale. */
+		return PAM_IGNORE;
+	}
 
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] ENTER: %s\n",
 		      pamh, "pam_sm_open_session");
-
-	if (retval != PAM_SUCCESS) {
-		PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",
-			      pamh, "pam_sm_open_session (no context)");
-		return PAM_IGNORE;
-	}
 
 	/* Check if session limit is enabled and if limit would be exceeded */
 	if (ctx->ctrl & PAM_TRUENAS_CHECK_SESSION_LIMIT) {
@@ -320,15 +322,14 @@ int pam_sm_close_session(pam_handle_t *pamh, int flags,
 
 	retval = ptn_init_context(pamh, flags, argc, argv,
 				  PAM_TRUENAS_CLOSE_SESSION, &created, &ctx);
+	if (retval != PAM_SUCCESS) {
+		/* ctx is NULL on every init-failure path; PAM_CTX_DEBUG() would
+		 * dereference NULL. See pam_sm_setcred for the full rationale. */
+		return PAM_IGNORE;
+	}
 
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] ENTER: %s\n",
 		      pamh, "pam_sm_close_session");
-
-	if (retval != PAM_SUCCESS) {
-		PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",
-			      pamh, "pam_sm_close_session (no context)");
-		return PAM_IGNORE;
-	}
 
 	retval = ptn_close_session(ctx);
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",

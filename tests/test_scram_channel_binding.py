@@ -199,10 +199,56 @@ def test_file_override_matching_binding(api_key_data, cb_file):
     assert code == truenas_pypam.PAMCode.PAM_CONV_AGAIN
 
 
+def test_file_override_mismatched_binding_rejected(api_key_data, cb_file):
+    """A 'p' client binding to a DIFFERENT cert (a re-terminating MITM) is rejected
+    when the server's binding is file-sourced. This is the scram_plus_cert= analog
+    of test_keyring_mismatched_binding_rejected: the c= validation must hold no
+    matter which source supplied the binding."""
+    code = _drive_to_final(api_key_data, channel_binding_type=truenas_pyscram.CB_TLS_SERVER_END_POINT,
+                           channel_binding=truenas_pyscram.CryptoDatum(b"\x00" * 32))
+    assert code == truenas_pypam.PAMCode.PAM_AUTH_ERR
+
+
 def test_file_override_unbound_client_policy(api_key_data, cb_file):
     """Policy applies identically when the binding comes from a file."""
     code = _drive_to_final(api_key_data, channel_binding_type=None, channel_binding=None)
     assert code == _expect_unbound(cb_file["mode"])
+
+
+# --- file override: unreadable / misconfigured cert -------------------------
+# scram_plus_cert points at a path that cannot be read (typo, wrong perms, cert
+# not yet provisioned). The server derives no binding, exactly as if the keyring
+# slot were absent, so behaviour must match the "no binding available" cases.
+
+def test_file_override_unreadable_cert_allows_unbound(api_key_data):
+    """scram_plus_cert=<unreadable> + negotiate: with no binding derivable, an 'n'
+    client still authenticates (negotiate degrades to plain SCRAM). This pins down
+    that the unreadable cert is not a blanket failure, so the bound-client rejection
+    below is meaningful and not passing for the wrong reason."""
+    _write_pam_service("scram_plus_cert=/nonexistent/pam_truenas_cb.pem "
+                       "channel_binding=negotiate")
+    try:
+        code = _drive_to_final(api_key_data, channel_binding_type=None, channel_binding=None)
+        assert code == truenas_pypam.PAMCode.PAM_CONV_AGAIN
+    finally:
+        os.unlink(PAM_SERVICE_PATH)
+
+
+def test_file_override_unreadable_cert_rejects_bound_client(api_key_data):
+    """scram_plus_cert=<unreadable> + negotiate: the server cannot derive a binding,
+    so a 'p' client that demands one is rejected, not accepted unverified (fail
+    closed -- a misconfigured/unreadable cert must not open a silent MITM window).
+    The keyring-source analog is test_no_binding_rejects_bound_client."""
+    _write_pam_service("scram_plus_cert=/nonexistent/pam_truenas_cb.pem "
+                       "channel_binding=negotiate")
+    try:
+        code = _drive_to_final(
+            api_key_data,
+            channel_binding_type=truenas_pyscram.CB_TLS_SERVER_END_POINT,
+            channel_binding=truenas_pyscram.CryptoDatum(b"\x33" * 32))
+        assert code == truenas_pypam.PAMCode.PAM_AUTH_ERR
+    finally:
+        os.unlink(PAM_SERVICE_PATH)
 
 
 # --- explicit sentinel + absent slot ----------------------------------------
