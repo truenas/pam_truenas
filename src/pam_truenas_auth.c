@@ -357,7 +357,8 @@ int _ptn_get_client_final(pam_tn_ctx_t *pam_ctx,
 
 /*
  * Read a (small) file -- e.g. a PEM certificate -- into a fresh buffer.
- * Returns 0 on success; the caller frees *buf_out.
+ * Returns 0 on success; the caller frees *buf_out. len_out is optional
+ * (may be NULL); when supplied it receives the buffer length.
  */
 static int _ptn_read_file(const char *path, char **buf_out, size_t *len_out)
 {
@@ -365,6 +366,10 @@ static int _ptn_read_file(const char *path, char **buf_out, size_t *len_out)
 	long sz = 0;
 	char *buf = NULL;
 	size_t rd = 0;
+
+	if (path == NULL || buf_out == NULL) {
+		return -1;
+	}
 
 	f = fopen(path, "rb");
 	if (!f) {
@@ -392,7 +397,9 @@ static int _ptn_read_file(const char *path, char **buf_out, size_t *len_out)
 		return -1;
 	}
 	*buf_out = buf;
-	*len_out = (size_t)sz;
+	if (len_out != NULL) {
+		*len_out = (size_t)sz;
+	}
 	return 0;
 }
 
@@ -571,6 +578,16 @@ int ptn_do_scram_auth(pam_tn_ctx_t *pam_ctx, const char *username)
 	retval = pam_get_item(pam_ctx->pamh, PAM_CONV, (const void **)&conv);
 	if (retval != PAM_SUCCESS) {
 		return retval;
+	}
+	if (conv == NULL || conv->conv == NULL) {
+		/*
+		 * pam_get_item() can return PAM_SUCCESS with a NULL conversation
+		 * (a misbehaving application). SCRAM is a multi-message exchange
+		 * that cannot proceed without it, so fail rather than dereference.
+		 */
+		PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
+			      "No PAM conversation function available");
+		return PAM_SYSTEM_ERR;
 	}
 
 	// get client-first-message

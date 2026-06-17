@@ -239,6 +239,9 @@ static int get_encrypted_user_data(key_serial_t api_keys_kr,
 
 	if (keyctl_read(api_key, data_out->data, data_out->size) != key_size) {
 		ptn_set_error(error_msg, "Failed to read API key data: %s", strerror(errno));
+		free(data_out->data);
+		data_out->data = NULL;
+		data_out->size = 0;
 		return -EIO;
 	}
 

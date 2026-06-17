@@ -69,7 +69,7 @@ typedef struct {
 /**
  * @brief	session information for pam session
  *
- * This struct is stored in LMDB for session tracking.
+ * This struct is stored in the kernel keyring for session tracking.
  */
 typedef struct {
 	struct timespec creation;	/* offset 0, size 16 */

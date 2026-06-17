@@ -150,7 +150,11 @@ session required    pam_truenas.so max_sessions=10
 
 ### pam_sm_setcred
 
-Stub function, returns `PAM_IGNORE`.
+Manages no credentials of its own, but returns `PAM_SUCCESS` on success (not
+`PAM_IGNORE`). This is deliberate: when `pam_truenas` is the only module in the
+auth stack, an all-`PAM_IGNORE` result makes `pam_setcred()` fail, which login
+services (sshd, login, …) treat as a failed login even though authentication
+succeeded. Returns `PAM_IGNORE` only if context initialization fails.
 
 ### pam_sm_acct_mgmt
 
@@ -222,7 +226,7 @@ Session entries stored in SESSIONS keyring:
 
 ## Python Libraries
 
-Python libraries are provided to manage the faillog and read session state. These libraries are packaged separately as `python3-truenas-pam-utils` and require the `truenas-keyring` library.
+Python libraries are provided to manage the faillog and read session state. These libraries are packaged separately as `python3-truenas-pam-utils` and require the `truenas_keyring` Python module (Debian package `python3-truenas-pykeyring`).
 
 ### truenas_pam_session
 
@@ -240,8 +244,9 @@ sudo apt install python3-truenas-pam-utils
   - `creation` (datetime) - Session creation time
   - `username`, `uid`, `gid` - User credentials
   - `pid`, `sid` - Process and session IDs
+  - `flags` (int) - Internal session flags
   - `service`, `rhost`, `ruser`, `tty` - PAM items
-  - `origin_family` - Origin type: "AF_UNIX", "AF_INET", "AF_INET6"
+  - `origin_family` - Origin type: "AF_UNIX", "AF_INET", "AF_INET6", or "Unknown(N)"
   - `origin` - Origin details (`PamUnixOrigin` or `PamTcpOrigin`)
   - `extra_data` - Additional JSON metadata
 
@@ -304,7 +309,7 @@ Read and iterate authentication failure log entries from the kernel keyring.
   - `source_type` - "RHOST", "TTY", or "UNKNOWN"
   - `username` - User that failed authentication
 
-- `FaillogIterator` - Iterator for querying failures:
+- `PamFaillog` - Iterator for querying failures:
   - `iterate()` - Yield all failure entries
   - `get_user_failures(username)` - Get failures for specific user
   - `get_statistics()` - Get statistics about failures and locked users
@@ -312,10 +317,10 @@ Read and iterate authentication failure log entries from the kernel keyring.
 **Usage Examples:**
 
 ```python
-from truenas_pam_faillog import FaillogIterator
+from truenas_pam_faillog import PamFaillog
 
 # List all failures
-iterator = FaillogIterator()
+iterator = PamFaillog()
 for entry in iterator.iterate():
     print(entry)  # Formatted as: [timestamp] User: username, RHOST: source
 
@@ -382,10 +387,10 @@ It is not mandatory for PAM applications to populate this data, and
 consumers of session python APIs or the keyring entries should allow
 for the possibility that they have not been set.
 
-The expected data format is a JSON object containing minmally two fields:
+The expected data format is a JSON object containing at least two fields:
 
 - `"origin_family"`: one of `"AF_UNIX"`, `"AF_INET"`, or `"AF_INET6"`.
-- `"origin"`: a JSON object containing on of the following origin objects.
+- `"origin"`: a JSON object containing one of the following origin objects.
 
 NOTE: additional fields will be preserved and stored in a JSON object
 in `json_data` in `kr_sess_t`.
@@ -432,7 +437,7 @@ An `AF_UNIX` origin contains the following fields based on `SO_PEERCRED`
 
 ``` javascript
 {
-  "origin_family: "AF_INET",
+  "origin_family": "AF_INET",
   "origin": {
     "loc_addr": "192.168.1.200",
     "loc_port": 53693,

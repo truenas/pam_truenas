@@ -261,10 +261,13 @@ uint32_t ptn_pam_parse(const pam_handle_t *pamh,
 		else if (!strncmp(*v, "scram_plus_cert=", strlen("scram_plus_cert="))) {
 			const char *path = *v + strlen("scram_plus_cert=");
 			/*
-			 * An empty value is treated as unset (keyring default), not a
-			 * literal "" path that would fail fopen() on every auth.
+			 * An empty value -- or the documented default sentinel
+			 * "truenas_keyring" (SCRAM_PLUS_CERT_KEYRING) -- is treated as
+			 * unset (keyring default), not a literal path that would fail
+			 * fopen() on every auth.
 			 */
-			if (pscram_plus_cert && (*path != '\0')) {
+			if (pscram_plus_cert && (*path != '\0') &&
+			    strcmp(path, SCRAM_PLUS_CERT_KEYRING) != 0) {
 				*pscram_plus_cert = path;
 			}
 		}
