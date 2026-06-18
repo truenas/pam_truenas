@@ -43,6 +43,7 @@ typedef struct pam_truenas_ctx {
 	ptn_auth_data_t json_auth_data; /* Decrypted auth data loaded from keyring */
 	kr_sess_t session_info;         /* Session being opened/closed (session management only) */
 	key_serial_t session_key_id;    /* Serial for session key in SESSIONS keyring */
+	char *scram_plus_cert;          /* Path to server cert for tls-server-end-point channel binding */
 } pam_tn_ctx_t;
 
 /* Function declarations */
@@ -55,7 +56,8 @@ extern uint32_t ptn_pam_parse(const pam_handle_t *pamh,
 			      int flags,
 			      int argc,
 			      const char **argv,
-			      uint32_t *psession_limit);
+			      uint32_t *psession_limit,
+			      const char **pscram_plus_cert);
 
 extern int ptn_init_context(pam_handle_t *pamh,
 			    int flags,

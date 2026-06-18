@@ -50,7 +50,7 @@ json_resp_t parse_dbid_json(ptn_auth_data_t *auth_data,
 
 	dbid = json_integer_value(value);
 	if ((dbid < 0) || (dbid > INT32_MAX)) {
-		ptn_set_error(error_info, "%ll: invalid API key dbid", dbid);
+		ptn_set_error(error_info, "%lld: invalid API key dbid", dbid);
 		return JSON_E_PARSE;
 	}
 
@@ -93,7 +93,7 @@ json_resp_t parse_iters_json(ptn_auth_data_t *auth_data,
 
 	iters = json_integer_value(value);
 	if ((iters < SCRAM_MIN_ITERS) || (iters > SCRAM_MAX_ITERS)) {
-		ptn_set_error(error_info, "%ll: invalid iteration count", iters);
+		ptn_set_error(error_info, "%lld: invalid iteration count", iters);
 		return JSON_E_PARSE;
 	}
 
@@ -118,7 +118,7 @@ json_resp_t parse_expiry_json(ptn_auth_data_t *auth_data,
 
 	expiry = json_integer_value(value);
 	if (expiry < TRUENAS_KEY_REVOKED) {
-		ptn_set_error(error_info, "%ll: invalid expiry timestamp", expiry);
+		ptn_set_error(error_info, "%lld: invalid expiry timestamp", expiry);
 		return JSON_E_PARSE;
 	}
 
