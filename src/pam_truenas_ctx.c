@@ -209,11 +209,16 @@ uint32_t ptn_pam_parse(const pam_handle_t *pamh,
 		       int flags,
 		       int argc,
 		       const char **argv,
-		       uint32_t *psession_limit)
+		       uint32_t *psession_limit,
+		       const char **pscram_plus_cert)
 {
 	uint32_t ctrl = 0;
 	int i;
 	const char **v;
+
+	if (pscram_plus_cert) {
+		*pscram_plus_cert = NULL;
+	}
 
 	if (flags & PAM_SILENT) {
 		ctrl |= PAM_TRUENAS_SILENT;
@@ -243,6 +248,29 @@ uint32_t ptn_pam_parse(const pam_handle_t *pamh,
 			parse_max_session(pamh, ctrl, *v, psession_limit);
 			ctrl |= PAM_TRUENAS_CHECK_SESSION_LIMIT;
 		}
+		else if (!strncmp(*v, "channel_binding=", strlen("channel_binding="))) {
+			const char *mode = *v + strlen("channel_binding=");
+			if (!strcasecmp(mode, "require"))
+				ctrl |= PAM_TRUENAS_REQUIRE_CB;
+			else if (strcasecmp(mode, "negotiate") != 0)
+				PAM_TRUENAS_DEBUG(pamh, ctrl, LOG_ERR,
+						  "invalid channel_binding mode \"%s\" "
+						  "(expected negotiate|require); "
+						  "defaulting to negotiate", mode);
+		}
+		else if (!strncmp(*v, "scram_plus_cert=", strlen("scram_plus_cert="))) {
+			const char *path = *v + strlen("scram_plus_cert=");
+			/*
+			 * An empty value -- or the documented default sentinel
+			 * "truenas_keyring" (SCRAM_PLUS_CERT_KEYRING) -- is treated as
+			 * unset (keyring default), not a literal path that would fail
+			 * fopen() on every auth.
+			 */
+			if (pscram_plus_cert && (*path != '\0') &&
+			    strcmp(path, SCRAM_PLUS_CERT_KEYRING) != 0) {
+				*pscram_plus_cert = path;
+			}
+		}
 	}
 
 	return ctrl;
@@ -262,6 +290,8 @@ void ptn_cleanup_context(pam_tn_ctx_t *ctx)
 
 	/* Clean up our session info */
 	pam_overwrite_object(&ctx->session_info);
+
+	free(ctx->scram_plus_cert);
 
 	/* Don't call pam_set_data here - it causes infinite recursion
 	 * when called from the PAM cleanup callback (_ptn_cleanup_cb).
@@ -324,7 +354,31 @@ int ptn_init_context(pam_handle_t *pamh,
 		keyring_get_pam_keyring();
 	}
 
-	r->ctrl = ptn_pam_parse(pamh, flags, argc, argv, &r->max_sessions);
+	const char *scram_plus_cert = NULL;
+	r->ctrl = ptn_pam_parse(pamh, flags, argc, argv, &r->max_sessions, &scram_plus_cert);
+
+	/*
+	 * Channel-binding source for SCRAM-PLUS, from the "scram_plus_cert=" PAM
+	 * module argument. By default (NULL here, or the literal "truenas_keyring")
+	 * the verifier reads the precomputed binding from the persistent keyring,
+	 * which middlewared populates from the active TLS certificate. An explicit
+	 * file path overrides this to read and hash a PEM (dev/test).
+	 */
+	free(r->scram_plus_cert);
+	r->scram_plus_cert = NULL;
+	if (scram_plus_cert != NULL) {
+		r->scram_plus_cert = strdup(scram_plus_cert);
+		if (r->scram_plus_cert == NULL) {
+			/*
+			 * Only free here when we created the context; a cached
+			 * context is owned by PAM and released via the cleanup cb.
+			 */
+			if (created) {
+				ptn_cleanup_context(r);
+			}
+			return PAM_BUF_ERR;
+		}
+	}
 
 	/*
 	 * Check environment variables for additional configuration if enabled
@@ -360,7 +414,7 @@ int ptn_init_context(pam_handle_t *pamh,
 		 */
 		ret = _ptn_fill_keyring(r);
 		if (ret != PAM_SUCCESS) {
-			free(r);
+			ptn_cleanup_context(r);
 			return ret;
 		}
 
@@ -374,7 +428,7 @@ int ptn_init_context(pam_handle_t *pamh,
 			PAM_CTX_DEBUG(r, LOG_ERR,
 				      "%d: failed to set pam module data.",
 				      ret);
-			free(r);
+			ptn_cleanup_context(r);
 			return ret;
 		}
 	}

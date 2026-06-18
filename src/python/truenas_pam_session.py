@@ -30,8 +30,8 @@ AF_UNIX = socket.AF_UNIX
 AF_INET = socket.AF_INET
 AF_INET6 = socket.AF_INET6
 
-# Struct format for unpacking the 4096-byte mdb_sess_t
-# Based on the C struct layout with proper alignment
+# Struct format for unpacking the 4096-byte kr_sess_t (kernel keyring session)
+# Based on the C struct layout (src/kr_session.h) with proper alignment
 MDB_SESS_STRUCT = (
     "16s"    # struct timespec (8 + 8 bytes)
     "16s"    # uuid_t session_id
@@ -39,13 +39,13 @@ MDB_SESS_STRUCT = (
     "i"      # pid_t sid
     "I"      # uint32_t flags
     "i"      # int origin_family
-    # mdb_cred_t (264 bytes)
+    # kr_cred_t (264 bytes)
     "256s"   # char name[LOGIN_NAME_MAX]
     "I"      # uid_t uid
     "I"      # gid_t gid
-    # mdb_origin_t union (272 bytes)
+    # kr_origin_t union (272 bytes)
     "272s"   # Union data
-    # mdb_pam_item_t (1020 bytes)
+    # kr_pam_item_t (1020 bytes)
     "255s"   # char service[NAME_MAX]
     "255s"   # char ruser[NAME_MAX]
     "255s"   # char rhost[NAME_MAX]

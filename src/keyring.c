@@ -239,9 +239,66 @@ static int get_encrypted_user_data(key_serial_t api_keys_kr,
 
 	if (keyctl_read(api_key, data_out->data, data_out->size) != key_size) {
 		ptn_set_error(error_msg, "Failed to read API key data: %s", strerror(errno));
+		free(data_out->data);
+		data_out->data = NULL;
+		data_out->size = 0;
 		return -EIO;
 	}
 
+	return 0;
+}
+
+/*
+ * Load the server-wide SCRAM channel binding that middlewared stores as a
+ * "user" key (PAM_SCRAM_BINDING_NAME) directly in the uid=0 persistent keyring.
+ * It lives there -- a sibling of the PAM_TRUENAS keyring -- rather than inside
+ * PAM_TRUENAS, whose children are per-user keyrings, so a single server-wide
+ * value is not confused with a username.
+ *
+ * The payload is the precomputed RFC 5929 tls-server-end-point value (raw digest
+ * bytes), so pam_truenas neither reads the certificate nor parses PEM at
+ * authentication time.
+ *
+ * The value is stored in the clear on purpose: it is a hash of the server's
+ * public leaf certificate (served in every TLS handshake), so it is not secret.
+ * Its integrity rests on the kernel keyring's access control -- host
+ * keyring-namespace access is the trust boundary.
+ *
+ * Returns 0 with the length in *out_len when the slot exists, -ENOENT when it is
+ * absent, or another -errno on a read failure. The caller passes a fixed buffer
+ * (the value is at most a SHA-512 digest), so no allocation happens here.
+ */
+int load_server_channel_binding(unsigned char *buf, size_t buflen, size_t *out_len)
+{
+	key_serial_t pkey, bind_key;
+	long key_size;
+
+	if ((buf == NULL) || (out_len == NULL)) {
+		return -EINVAL;
+	}
+
+	pkey = keyctl_get_persistent(0, KEY_SPEC_PROCESS_KEYRING);
+	if (pkey == -1) {
+		return -errno;
+	}
+
+	bind_key = keyctl_search(pkey, "user", PAM_SCRAM_BINDING_NAME, 0);
+	if (bind_key == -1) {
+		/* ENOKEY simply means middlewared has not published a binding. */
+		return (errno == ENOKEY) ? -ENOENT : -errno;
+	}
+
+	/*
+	 * Read straight into the caller's fixed buffer. keyctl_read() returns the
+	 * full payload size even when it exceeds the buffer, so a larger value means
+	 * a malformed binding and is rejected rather than used truncated.
+	 */
+	key_size = keyctl_read(bind_key, (char *)buf, buflen);
+	if ((key_size <= 0) || (key_size > (long)buflen)) {
+		return -EIO;
+	}
+
+	*out_len = (size_t)key_size;
 	return 0;
 }
 

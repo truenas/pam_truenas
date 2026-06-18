@@ -1,3 +1,21 @@
+pam-truenas (1.1.0-1) unstable; urgency=medium
+
+  * Add SCRAM-PLUS channel binding (RFC 5929 tls-server-end-point) to
+    pam_sm_authenticate, detecting a TLS-terminating MITM that relays an
+    otherwise-valid client proof:
+    - By default the precomputed binding is read from the uid=0 persistent
+      keyring (published by middlewared from the active TLS certificate); pam_truenas
+      parses no certificate at authentication time. scram_plus_cert=<path>
+      overrides the source to read and hash a PEM file instead.
+    - channel_binding=negotiate|require selects the policy: negotiate (default)
+      enforces the binding for clients that use it and allows those that do not;
+      require rejects clients that do not bind (failing closed when no binding
+      is available).
+  * Require libtruenas-scram (>= 0.2.0) for the new verification and binding
+    computation symbols.
+
+ -- Andrew Walker <andrew.walker@truenas.com>  Fri, 12 Jun 2026 01:06:38 +0000
+
 pam-truenas (1.0.0-1) unstable; urgency=medium
 
   * Initial release
