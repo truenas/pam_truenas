@@ -38,6 +38,17 @@
 #define PAM_SESSION_NAME "SESSIONS"
 #define PAM_API_KEY_NAME "API_KEYS"
 #define PAM_FAILLOG_NAME "FAILLOG"
+/*
+ * SCRAM-PLUS channel binding: middlewared publishes the precomputed RFC 5929
+ * tls-server-end-point value as a "user" key with this description directly in
+ * the uid=0 persistent keyring (a sibling of the PAM_TRUENAS keyring, kept out
+ * of it so the single server-wide value is not confused with a per-user
+ * keyring). "truenas_keyring" is the scram_plus_cert= value (and the default)
+ * that selects this keyring source over a PEM file.
+ */
+#define PAM_SCRAM_BINDING_NAME "TRUENAS_SCRAM_PLUS_SERVER_BINDING"
+#define SCRAM_PLUS_CERT_KEYRING "truenas_keyring"
+#define PAM_SCRAM_BINDING_MAX 64	/* SHA-512 digest length: payload upper bound */
 
 /* context flags */
 #define PAM_TRUENAS_SILENT	0x00000001	/* Don't emit any messages */
@@ -49,6 +60,7 @@
 #define PAM_TRUENAS_PASSWORD_IS_API_KEY	0x00000040	/* Password contains API key material */
 #define PAM_TRUENAS_USE_ENV_CONFIG	0x00000080	/* Check PAM environment variables for configuration */
 #define PAM_TRUENAS_CHECK_SESSION_LIMIT	0x00000100	/* Check if user has exceeded max_sessions limit */
+#define PAM_TRUENAS_REQUIRE_CB		0x00000200	/* channel_binding=require: mandatory SCRAM channel binding (SCRAM-PLUS) */
 
 
 #define CHECK_TALLY(ctrl) \

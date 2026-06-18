@@ -60,6 +60,7 @@ sudo dpkg -i ../libpam-truenas_*.deb ../python3-truenas-pam-utils_*.deb
 
 Main authentication function supporting:
 - SCRAM-SHA-512 challenge-response
+- SCRAM-PLUS channel binding (`channel_binding=`)
 - Password/API key fallback (with `allow_password_auth`)
 - Faillock tally management (with `authsucc`/`authfail`)
 
@@ -72,6 +73,16 @@ Main authentication function supporting:
 - `use_env_config` - Read config from PAM environment
 - `authsucc` - Reset tally on success
 - `authfail` - Increment tally on failure
+- `scram_plus_cert=<source>` - Channel-binding certificate source for RFC 5929
+  `tls-server-end-point`. Default `truenas_keyring`: read the precomputed binding
+  from the persistent keyring (published by middlewared from the active TLS
+  cert). A file path (e.g. `/etc/certificates/active.crt`) overrides this to read
+  and hash a PEM instead (dev/test)
+- `channel_binding=negotiate|require` - Channel-binding policy (default
+  `negotiate`): `negotiate` enforces the binding for clients that use it and
+  allows those that don't; `require` rejects clients that don't bind. Binding is
+  active whenever one is available (keyring slot present or a cert path given);
+  `require` fails closed when none is
 
 **Basic authentication:**
 ```
@@ -95,6 +106,36 @@ auth    [default=done]                pam_truenas.so authfail
 auth    required                      pam_truenas.so authsucc
 ```
 
+**SCRAM-PLUS channel binding:**
+
+The binding must come from the certificate that terminates the client's TLS
+connection. By default pam_truenas reads the precomputed binding from the uid=0
+persistent keyring, which middlewared publishes from the active TLS certificate
+-- so no path needs to be configured. Requires `libtruenas-scram` >= 0.2.0.
+
+```
+# Negotiated (default source = keyring): bind clients that use channel
+# binding, allow those that don't
+auth    required    pam_truenas.so channel_binding=negotiate
+
+# Mandatory: reject clients that don't channel-bind
+auth    required    pam_truenas.so channel_binding=require
+
+# Override the source with a PEM file instead of the keyring (dev/test)
+auth    required    pam_truenas.so scram_plus_cert=/etc/certificates/active.crt
+```
+
+**Trust boundary:** the keyring binding is stored in the clear -- it is a hash of
+the server's public leaf certificate (served in every TLS handshake), so it is
+not secret. Its integrity rests on the kernel keyring's access control, which
+makes host keyring-namespace access the boundary: a privileged container that
+shares it (host UID 0, not its own user namespace) could tamper with this binding
+-- and with `PAM_TRUENAS` itself (API keys, sessions, faillock). Keep such
+workloads in their own user namespace. When no binding is available -- deletion,
+or a boot/rotation gap -- a client that requests channel binding is rejected
+(under `negotiate` as well as `require`) rather than accepted without
+verification; only non-binding clients are still admitted under `negotiate`.
+
 ### pam_sm_open_session / pam_sm_close_session
 
 Session tracking in kernel keyring with optional per-user limits.
@@ -109,7 +150,11 @@ session required    pam_truenas.so max_sessions=10
 
 ### pam_sm_setcred
 
-Stub function, returns `PAM_IGNORE`.
+Manages no credentials of its own, but returns `PAM_SUCCESS` on success (not
+`PAM_IGNORE`). This is deliberate: when `pam_truenas` is the only module in the
+auth stack, an all-`PAM_IGNORE` result makes `pam_setcred()` fail, which login
+services (sshd, login, …) treat as a failed login even though authentication
+succeeded. Returns `PAM_IGNORE` only if context initialization fails.
 
 ### pam_sm_acct_mgmt
 
@@ -149,6 +194,7 @@ API keys are identified by database ID:
 Keys are stored encrypted in the kernel keyring hierarchy:
 ```
 persistent-keyring:uid=0
+├── TRUENAS_SCRAM_PLUS_SERVER_BINDING (user key: SCRAM-PLUS channel binding)
 └── PAM_TRUENAS
     └── username
         ├── API_KEYS
@@ -180,7 +226,7 @@ Session entries stored in SESSIONS keyring:
 
 ## Python Libraries
 
-Python libraries are provided to manage the faillog and read session state. These libraries are packaged separately as `python3-truenas-pam-utils` and require the `truenas-keyring` library.
+Python libraries are provided to manage the faillog and read session state. These libraries are packaged separately as `python3-truenas-pam-utils` and require the `truenas_keyring` Python module (Debian package `python3-truenas-pykeyring`).
 
 ### truenas_pam_session
 
@@ -198,8 +244,9 @@ sudo apt install python3-truenas-pam-utils
   - `creation` (datetime) - Session creation time
   - `username`, `uid`, `gid` - User credentials
   - `pid`, `sid` - Process and session IDs
+  - `flags` (int) - Internal session flags
   - `service`, `rhost`, `ruser`, `tty` - PAM items
-  - `origin_family` - Origin type: "AF_UNIX", "AF_INET", "AF_INET6"
+  - `origin_family` - Origin type: "AF_UNIX", "AF_INET", "AF_INET6", or "Unknown(N)"
   - `origin` - Origin details (`PamUnixOrigin` or `PamTcpOrigin`)
   - `extra_data` - Additional JSON metadata
 
@@ -262,7 +309,7 @@ Read and iterate authentication failure log entries from the kernel keyring.
   - `source_type` - "RHOST", "TTY", or "UNKNOWN"
   - `username` - User that failed authentication
 
-- `FaillogIterator` - Iterator for querying failures:
+- `PamFaillog` - Iterator for querying failures:
   - `iterate()` - Yield all failure entries
   - `get_user_failures(username)` - Get failures for specific user
   - `get_statistics()` - Get statistics about failures and locked users
@@ -270,10 +317,10 @@ Read and iterate authentication failure log entries from the kernel keyring.
 **Usage Examples:**
 
 ```python
-from truenas_pam_faillog import FaillogIterator
+from truenas_pam_faillog import PamFaillog
 
 # List all failures
-iterator = FaillogIterator()
+iterator = PamFaillog()
 for entry in iterator.iterate():
     print(entry)  # Formatted as: [timestamp] User: username, RHOST: source
 
@@ -340,10 +387,10 @@ It is not mandatory for PAM applications to populate this data, and
 consumers of session python APIs or the keyring entries should allow
 for the possibility that they have not been set.
 
-The expected data format is a JSON object containing minmally two fields:
+The expected data format is a JSON object containing at least two fields:
 
 - `"origin_family"`: one of `"AF_UNIX"`, `"AF_INET"`, or `"AF_INET6"`.
-- `"origin"`: a JSON object containing on of the following origin objects.
+- `"origin"`: a JSON object containing one of the following origin objects.
 
 NOTE: additional fields will be preserved and stored in a JSON object
 in `json_data` in `kr_sess_t`.
@@ -390,7 +437,7 @@ An `AF_UNIX` origin contains the following fields based on `SO_PEERCRED`
 
 ``` javascript
 {
-  "origin_family: "AF_INET",
+  "origin_family": "AF_INET",
   "origin": {
     "loc_addr": "192.168.1.200",
     "loc_port": 53693,

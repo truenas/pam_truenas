@@ -65,7 +65,7 @@ static int _pam_populate_auth_data(pam_tn_ctx_t *ctx, const char *canonical_user
 int ptn_process_tally(pam_tn_ctx_t *ctx)
 {
 	int retval;
-	bool is_locked;
+	bool is_locked = false;
 
 	retval = check_tally(ctx, &is_locked);
 
@@ -192,7 +192,8 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	return retval;
 }
 
-/* stub-out remaining PAM functions */
+/* remaining PAM functions: setcred reports success (see below); acct_mgmt and
+ * chauthtok are no-ops */
 _PUBLIC_ PAM_EXTERN
 int pam_sm_setcred(pam_handle_t *pamh, int flags,
 		   int argc, const char **argv)
@@ -203,18 +204,28 @@ int pam_sm_setcred(pam_handle_t *pamh, int flags,
 
 	retval = ptn_init_context(pamh, flags, argc, argv,
 				  PAM_TRUENAS_SETCRED, &created, &ctx);
+	if (retval != PAM_SUCCESS) {
+		/*
+		 * ptn_init_context() leaves ctx NULL on every failure path, so
+		 * there is nothing to debug-log against here: PAM_CTX_DEBUG()
+		 * dereferences ctx unconditionally and would crash. The failure
+		 * itself is already logged inside ptn_init_context().
+		 */
+		return PAM_IGNORE;
+	}
 
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] ENTER: %s\n",
 		      pamh, "pam_sm_setcred");
 
-	if (retval != PAM_SUCCESS) {
-		PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",
-			      pamh, "pam_sm_setcred");
-		return PAM_IGNORE;
-	}
-
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",
 		      pamh, "pam_sm_setcred");
+	/*
+	 * Return PAM_SUCCESS (retval is PAM_SUCCESS here), NOT PAM_IGNORE. pam_truenas
+	 * is frequently the only module in the auth stack, and an all-PAM_IGNORE stack
+	 * does not make pam_setcred() return PAM_SUCCESS -- login services (sshd,
+	 * login, ...) then treat the post-authentication setcred as a failed login.
+	 * We manage no credentials of our own here, but we must still report success.
+	 */
 	return retval;
 }
 
@@ -256,15 +267,14 @@ int pam_sm_open_session(pam_handle_t *pamh, int flags,
 
 	retval = ptn_init_context(pamh, flags, argc, argv,
 				  PAM_TRUENAS_OPEN_SESSION, &created, &ctx);
+	if (retval != PAM_SUCCESS) {
+		/* ctx is NULL on every init-failure path; PAM_CTX_DEBUG() would
+		 * dereference NULL. See pam_sm_setcred for the full rationale. */
+		return PAM_IGNORE;
+	}
 
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] ENTER: %s\n",
 		      pamh, "pam_sm_open_session");
-
-	if (retval != PAM_SUCCESS) {
-		PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",
-			      pamh, "pam_sm_open_session (no context)");
-		return PAM_IGNORE;
-	}
 
 	/* Check if session limit is enabled and if limit would be exceeded */
 	if (ctx->ctrl & PAM_TRUENAS_CHECK_SESSION_LIMIT) {
@@ -320,15 +330,14 @@ int pam_sm_close_session(pam_handle_t *pamh, int flags,
 
 	retval = ptn_init_context(pamh, flags, argc, argv,
 				  PAM_TRUENAS_CLOSE_SESSION, &created, &ctx);
+	if (retval != PAM_SUCCESS) {
+		/* ctx is NULL on every init-failure path; PAM_CTX_DEBUG() would
+		 * dereference NULL. See pam_sm_setcred for the full rationale. */
+		return PAM_IGNORE;
+	}
 
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] ENTER: %s\n",
 		      pamh, "pam_sm_close_session");
-
-	if (retval != PAM_SUCCESS) {
-		PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",
-			      pamh, "pam_sm_close_session (no context)");
-		return PAM_IGNORE;
-	}
 
 	retval = ptn_close_session(ctx);
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] LEAVE: %s\n",

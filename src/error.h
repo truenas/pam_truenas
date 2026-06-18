@@ -17,7 +17,8 @@ typedef struct pam_truenas_error_info {
  * @param[in]	... - format arguments
  */
 void _ptn_set_error(ptn_err_t *error, const char *fmt,
-		    const char *location, ...);
+		    const char *location, ...)
+	__attribute__((format(printf, 2, 4)));
 
 #define __stringify(x) #x
 #define __stringify2(x) __stringify(x)

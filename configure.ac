@@ -1,5 +1,5 @@
 AC_PREREQ([2.69])
-AC_INIT([pam-truenas], [1.0], [andrew.walker@truenas.com])
+AC_INIT([pam-truenas], [1.1.0], [andrew.walker@truenas.com])
 AC_CONFIG_SRCDIR([src/pam_truenas.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIRS([m4])
