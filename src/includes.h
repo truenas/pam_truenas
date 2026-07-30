@@ -13,7 +13,7 @@
 #include <limits.h>
 #include <syslog.h>
 #include <unistd.h>
-#include <semaphore.h>
+#include <fcntl.h>
 #include <uuid/uuid.h>
 #include <keyutils.h>
 #include <netinet/in.h>
@@ -32,6 +32,13 @@
 #define MODULE_NAME "pam_truenas"
 #define MODULE_DATA_NAME "pam_truenas_data"
 #define PAM_TN_VAL_UNKNOWN "<unknown>"
+
+/*
+ * Lock file serializing creation of the per-user keyring layout. Lives on
+ * tmpfs: it carries no state, only the OFD lock taken while a keyring is
+ * being created, and is recreated on demand if absent.
+ */
+#define KEYRING_LOCK_PATH "/run/" MODULE_NAME ".lock"
 
 /* Keyring names */
 #define PAM_KEYRING_NAME "PAM_TRUENAS"
