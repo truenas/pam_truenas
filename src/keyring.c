@@ -48,15 +48,93 @@ void keyring_semaphore_cleanup(sem_t *krsem, const char *name, bool unlink)
 }
 
 /**
+ * Look up a keyring by description among the DIRECT children of the specified
+ * keyring.
+ *
+ * keyctl_search() is unsuitable here: it searches the keyring tree recursively
+ * and also tests the keyring being searched, so it can return a keyring that
+ * belongs to a different parent. A keyring indexes its members by
+ * (type, description), so at most one direct child can match.
+ *
+ * Returns keyring serial on success or -1 (with errno set, ENOKEY when no
+ * child matches) on error
+ */
+static key_serial_t find_child_keyring(key_serial_t parent, const char *name)
+{
+	key_serial_t *children = NULL;
+	key_serial_t found = -1;
+	long bufsz;
+	size_t nchildren, i;
+
+	bufsz = keyctl_read_alloc(parent, (void **)&children);
+	if (bufsz == -1) {
+		return -1;
+	}
+
+	if ((bufsz % sizeof(key_serial_t)) != 0) {
+		free(children);
+		errno = EIO;
+		return -1;
+	}
+
+	nchildren = bufsz / sizeof(key_serial_t);
+
+	for (i = 0; i < nchildren; i++) {
+		char *desc = NULL;
+		char *p;
+		int nsep;
+
+		if (keyctl_describe_alloc(children[i], &desc) == -1) {
+			/* A child may be unlinked between the read above and
+			 * this call. Skip it rather than failing the lookup.
+			 */
+			continue;
+		}
+
+		/* Format is "type;uid;gid;perm;description". A description may
+		 * itself contain ';' -- a directory service can hand us such a
+		 * username -- so advance past exactly four separators rather
+		 * than scanning back from the end.
+		 */
+		p = desc;
+		for (nsep = 0; (nsep < 4) && (p != NULL); nsep++) {
+			p = strchr(p, ';');
+			if (p != NULL) {
+				p++;
+			}
+		}
+
+		if ((p != NULL) &&
+		    (strncmp(desc, KEY_TYPE_KEYRING ";",
+			     sizeof(KEY_TYPE_KEYRING ";") - 1) == 0) &&
+		    (strcmp(p, name) == 0)) {
+			found = children[i];
+			free(desc);
+			break;
+		}
+
+		free(desc);
+	}
+
+	free(children);
+
+	if (found == -1) {
+		errno = ENOKEY;
+	}
+
+	return found;
+}
+
+/**
  * Function to atomically get or create a keyring with the specified name
- * inside the specified keyring. It's technically possible to create multiple
- * keys with the same description in the same keyring; however, there is not
- * a convenient method to get all instances matching a particular description.
- * keyctl_search() will return the most recently added. This means we need
- * to use a synchronization primitive if we must go from the get to the create
- * portion of this function. Since it may be called internally by multiple
- * threads in the same process (if there are multiple PAM handles) or by
- * multiple processes, we're currently using named semaphores here.
+ * inside the specified keyring. A keyring indexes its members by
+ * (type, description), so linking a second keyring with an existing
+ * description displaces the first: it is unlinked from the parent and its
+ * contents become unreachable. This means we need to use a synchronization
+ * primitive if we must go from the get to the create portion of this
+ * function. Since it may be called internally by multiple threads in the
+ * same process (if there are multiple PAM handles) or by multiple
+ * processes, we're currently using named semaphores here.
  *
  * Returns keyring serial on success or -1 (with errno set) on error
  */
@@ -65,7 +143,7 @@ static key_serial_t get_or_create_keyring(key_serial_t pkey, const char *name)
 	key_serial_t found, created;
 	sem_t *sem;
 
-	found = keyctl_search(pkey, KEY_TYPE_KEYRING, name, 0);
+	found = find_child_keyring(pkey, name);
 	if ((found > 0) || ((found == -1) && (errno != ENOKEY))) {
 		// We either found the key or had an unexpected error
 		return found;
@@ -82,7 +160,7 @@ static key_serial_t get_or_create_keyring(key_serial_t pkey, const char *name)
 	// search for key a second time. Another process or thread
 	// may have created the key between our first check and us
 	// acquiring the semaphore
-	found = keyctl_search(pkey, KEY_TYPE_KEYRING, name, 0);
+	found = find_child_keyring(pkey, name);
 	if ((found > 0) || ((found == -1) && (errno != ENOKEY))) {
 		// We either found the key or had an unexpected error
 		// Keep semaphore around in hopes someone can fix
