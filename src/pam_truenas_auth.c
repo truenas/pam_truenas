@@ -245,7 +245,7 @@ int _ptn_get_client_first(pam_tn_ctx_t *pam_ctx,
 		PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
 			      "Failed to parse client first message: (%s)",
 			      error.message);
-		if (maybe_password && (ret == SCRAM_E_PARSE_ERROR)) {
+		if (maybe_password) {
 			// Client sent a password instead of SCRAM message
 			// Store it as PAM_AUTHTOK for password auth fallback
 			retval = pam_set_item(pam_ctx->pamh, PAM_AUTHTOK, resp[0].resp);
