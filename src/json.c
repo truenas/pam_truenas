@@ -177,6 +177,16 @@ json_resp_t parse_json_auth_data(ptn_auth_data_t *auth_data,
 	json_error_t error;
 	json_resp_t resp;
 
+	/*
+	 * Release SCRAM key material decoded by a previous call before we
+	 * zero the struct. The context is cached in the PAM handle, so this
+	 * runs again for every pam_authenticate() on the same handle and the
+	 * old salt/stored_key/server_key buffers would otherwise be orphaned
+	 * un-zeroized, with only the final set reachable by
+	 * ptn_cleanup_context(). Safe on first entry: the context is calloc'd.
+	 */
+	clear_scram_auth_data(&auth_data->scram_data);
+
 	/* Initialize the auth_data struct */
 	memset(auth_data, 0, sizeof(*auth_data));
 

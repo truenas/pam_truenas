@@ -5,6 +5,7 @@ import truenas_pypwenc
 import truenas_pyscram
 import truenas_keyring
 from truenas_pam_faillog import PamFaillog
+from truenas_pam_session import PAM_KEYRING_NAME, PAM_SESSION_NAME
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -15,12 +16,14 @@ def clear_all_keyring_state():
         faillog = PamFaillog()
         faillog.reset_tally("bob")
 
-        # Still need to manually clear SESSION keyring as it's not handled by reset_tally
+        # Still need to manually clear SESSIONS keyring as it's not handled by reset_tally.
+        # Use the module's own constants -- a literal here silently degrades this fixture
+        # into a no-op if it ever drifts from the name the C module creates.
         try:
             persistent = truenas_keyring.get_persistent_keyring()
-            pam_keyring = persistent.search(key_type="keyring", description="PAM_TRUENAS")
+            pam_keyring = persistent.search(key_type="keyring", description=PAM_KEYRING_NAME)
             bob_keyring = pam_keyring.search(key_type="keyring", description="bob")
-            session = bob_keyring.search(key_type="keyring", description="SESSION")
+            session = bob_keyring.search(key_type="keyring", description=PAM_SESSION_NAME)
             session.clear()
         except FileNotFoundError:
             pass  # No session to clear

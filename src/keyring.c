@@ -329,7 +329,7 @@ int load_server_auth_data_from_keyring(pam_tn_ctx_t *pam_ctx,
 	json_resp_t parse_result;
 	pwenc_resp_t resp;
 	pwenc_error_t pwenc_error = {0};
-	pwenc_datum_t encrypted_data;
+	pwenc_datum_t encrypted_data = {0};
 	pwenc_datum_t decrypted_data = {0};
 	bool created;
 	int ret;
@@ -352,6 +352,7 @@ int load_server_auth_data_from_keyring(pam_tn_ctx_t *pam_ctx,
 	if (resp != PWENC_SUCCESS) {
 		ptn_set_error(error_msg, "Failed to init pwenc context: %s", pwenc_error.message);
 		pwenc_free_context(pwenc_ctx);
+		pwenc_datum_free(&encrypted_data, false);
 		return -EIO;
 	}
 
