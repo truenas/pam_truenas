@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
+/* F_OFD_SETLKW and friends are guarded by __USE_GNU in <fcntl.h> */
+#define _GNU_SOURCE
+
 #include "keyring.h"
 #include "json.h"
 #include <stdlib.h>
@@ -8,43 +11,67 @@
 
 #define KEY_TYPE_KEYRING "keyring"
 
-/* man (7) sem_overview maximum name length for named semaphore */
-typedef char semname_t[NAME_MAX - 4];
-
-/* Keyring semaphore management code
- * ---------------------------------
- * We treat the keyring description as a unique identifier. This
- * exposes some risk of race when creating the per-user keyring
- * layout. To help avoid this risk we employ named semaphores that
- * are held specifically when creating the new keyrings and are
- * deleted once they are created.
+/* Keyring creation lock
+ * ---------------------
+ * We treat the keyring description as a unique identifier. This exposes
+ * some risk of race when creating the per-user keyring layout, so the
+ * get-then-create sequence below is serialized.
+ *
+ * pam_truenas is called from several processes and, under middlewared,
+ * from multiple threads within one process, so the lock has to exclude
+ * both. An open file description lock does: it belongs to the open file
+ * description rather than to the process, so threads that each open the
+ * file exclude one another, and the kernel drops the lock when the
+ * descriptor is closed -- including when the holder is killed. A named
+ * semaphore cannot offer that last property: an owner that dies while
+ * holding it leaves every later caller blocked with no timeout.
+ *
+ * The lock covers the whole file rather than a per-description range.
+ * It is only reached when the target keyring does not already exist, so
+ * serializing all creation costs nothing measurable.
  */
 static
-sem_t *get_keyring_semaphore(const char *name)
+int keyring_lock_acquire(void)
 {
-	semname_t sname;
-	sem_t *out;
-	snprintf(sname, sizeof(sname), "/" MODULE_NAME "-%s", name);
+	struct flock fl = {
+		.l_type = F_WRLCK,
+		.l_whence = SEEK_SET,
+		.l_start = 0,
+		.l_len = 0,
+	};
+	int fd, ret;
 
-	out = sem_open(sname, O_CREAT, 0600, 1);
-	if (out == SEM_FAILED) {
-		return NULL;
+	fd = open(KEYRING_LOCK_PATH, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	if (fd == -1) {
+		return -1;
 	}
 
-	return out;
+	do {
+		ret = fcntl(fd, F_OFD_SETLKW, &fl);
+	} while ((ret == -1) && (errno == EINTR));
+
+	if (ret == -1) {
+		int saved_errno = errno;
+
+		close(fd);
+		errno = saved_errno;
+		return -1;
+	}
+
+	return fd;
 }
 
 static
-void keyring_semaphore_cleanup(sem_t *krsem, const char *name, bool unlink)
+void keyring_lock_release(int fd)
 {
-	semname_t sname;
-	sem_post(krsem);
-	sem_close(krsem);
+	/* Closing the descriptor drops the lock. Callers report the errno
+	 * of the failure that brought them here, so it must survive.
+	 */
+	int saved_errno = errno;
 
-	if (unlink) {
-		snprintf(sname, sizeof(sname), "/" MODULE_NAME "-%s", name);
-		sem_unlink(sname);
-	}
+	close(fd);
+
+	errno = saved_errno;
 }
 
 /**
@@ -141,7 +168,7 @@ static key_serial_t find_child_keyring(key_serial_t parent, const char *name)
 static key_serial_t get_or_create_keyring(key_serial_t pkey, const char *name)
 {
 	key_serial_t found, created;
-	sem_t *sem;
+	int lockfd;
 
 	found = find_child_keyring(pkey, name);
 	if ((found > 0) || ((found == -1) && (errno != ENOKEY))) {
@@ -149,34 +176,30 @@ static key_serial_t get_or_create_keyring(key_serial_t pkey, const char *name)
 		return found;
 	}
 
-	// key with "name" was not found so we'll acquire semaphore
-	sem = get_keyring_semaphore(name);
-	if (sem == NULL) {
-		// errno set by sem_open()
+	// key with "name" was not found so we'll take the creation lock
+	lockfd = keyring_lock_acquire();
+	if (lockfd == -1) {
+		// errno set by open() or fcntl()
 		return -1;
 	}
 
-	sem_wait(sem);
 	// search for key a second time. Another process or thread
 	// may have created the key between our first check and us
-	// acquiring the semaphore
+	// acquiring the lock
 	found = find_child_keyring(pkey, name);
 	if ((found > 0) || ((found == -1) && (errno != ENOKEY))) {
 		// We either found the key or had an unexpected error
-		// Keep semaphore around in hopes someone can fix
-		keyring_semaphore_cleanup(sem, name, false);
+		keyring_lock_release(lockfd);
 		return found;
 	}
 
 	created = add_key(KEY_TYPE_KEYRING, name, NULL, 0, pkey);
 	if (created == -1) {
-		keyring_semaphore_cleanup(sem, name, false);
+		keyring_lock_release(lockfd);
 		return created;
 	}
 
-	// Once we've definitely created the target keyring
-	// we can safely unlink the named semaphore
-	keyring_semaphore_cleanup(sem, name, true);
+	keyring_lock_release(lockfd);
 	return created;
 }
 
