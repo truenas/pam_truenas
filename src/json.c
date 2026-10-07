@@ -302,22 +302,9 @@ json_resp_t populate_pam_items(pam_tn_ctx_t *ctx, kr_sess_t *sess, json_error_in
 	sess->cred.uid = uid;
 	sess->cred.gid = gid;
 
-	/* Get other PAM items */
-	if (pam_get_item(ctx->pamh, PAM_SERVICE, (const void **)&pam_val) == PAM_SUCCESS && pam_val) {
-		strlcpy(sess->pam_item.service, pam_val, sizeof(sess->pam_item.service));
-	}
-
-	if (pam_get_item(ctx->pamh, PAM_RUSER, (const void **)&pam_val) == PAM_SUCCESS && pam_val) {
-		strlcpy(sess->pam_item.ruser, pam_val, sizeof(sess->pam_item.ruser));
-	}
-
-	if (pam_get_item(ctx->pamh, PAM_RHOST, (const void **)&pam_val) == PAM_SUCCESS && pam_val) {
-		strlcpy(sess->pam_item.rhost, pam_val, sizeof(sess->pam_item.rhost));
-	}
-
-	if (pam_get_item(ctx->pamh, PAM_TTY, (const void **)&pam_val) == PAM_SUCCESS && pam_val) {
-		strlcpy(sess->pam_item.tty, pam_val, sizeof(sess->pam_item.tty));
-	}
+	/* Get other PAM items. Closing a session on another handle matches
+	 * against these, so they are copied by the same function */
+	ptn_kr_get_pam_items(ctx->pamh, &sess->pam_item);
 
 	return JSON_E_SUCCESS;
 }

@@ -12,6 +12,153 @@
 
 #define KEY_TYPE_USER "user"
 
+/* Largest payload pack_session() produces: every string at its maximum */
+#define KR_SESS_PAYLOAD_MAX (sizeof(kr_sess_hdr_t) + \
+			     sizeof(((kr_sess_t *)NULL)->cred.name) + \
+			     sizeof(kr_pam_item_t) + SECURITY_LABEL_MAX + \
+			     sizeof(((kr_sess_t *)NULL)->json_data))
+
+static char *
+put_string(char *p, const char *str, size_t size)
+{
+	/* str is NUL-terminated within its size-byte array */
+	size_t len = strnlen(str, size - 1);
+
+	memcpy(p, str, len);
+	p[len] = '\0';
+	return p + len + 1;
+}
+
+/**
+ * @brief Serialize a session into its keyring payload, see kr_sess_hdr_t
+ *
+ * @param[out] buf - at least KR_SESS_PAYLOAD_MAX bytes
+ * @return payload length
+ */
+static size_t
+pack_session(const kr_sess_t *sess, char *buf)
+{
+	kr_sess_hdr_t hdr;
+	const char *sec = "";
+	char *p = buf + sizeof(hdr);
+
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.version = KR_SESS_VERSION;
+	hdr.flags = sess->flags;
+	hdr.creation = sess->creation;
+	memcpy(hdr.session_id, sess->session_id, sizeof(hdr.session_id));
+	hdr.pid = sess->pid;
+	hdr.sid = sess->sid;
+	hdr.origin_family = sess->origin_family;
+	hdr.uid = sess->cred.uid;
+	hdr.gid = sess->cred.gid;
+
+	switch (sess->origin_family) {
+	case AF_UNIX:
+		hdr.origin.unix_origin.pid = sess->origin.unix_origin.pid;
+		hdr.origin.unix_origin.uid = sess->origin.unix_origin.uid;
+		hdr.origin.unix_origin.gid = sess->origin.unix_origin.gid;
+		hdr.origin.unix_origin.loginuid = sess->origin.unix_origin.loginuid;
+		sec = sess->origin.unix_origin.sec;
+		break;
+	case AF_INET:
+	case AF_INET6:
+		hdr.origin.tcp_origin = sess->origin.tcp_origin;
+		break;
+	}
+
+	memcpy(buf, &hdr, sizeof(hdr));
+	p = put_string(p, sess->cred.name, sizeof(sess->cred.name));
+	p = put_string(p, sess->pam_item.service, sizeof(sess->pam_item.service));
+	p = put_string(p, sess->pam_item.ruser, sizeof(sess->pam_item.ruser));
+	p = put_string(p, sess->pam_item.rhost, sizeof(sess->pam_item.rhost));
+	p = put_string(p, sess->pam_item.tty, sizeof(sess->pam_item.tty));
+	p = put_string(p, sec, SECURITY_LABEL_MAX);
+	p = put_string(p, sess->json_data, sizeof(sess->json_data));
+
+	return p - buf;
+}
+
+/* Returns the position after the string, or NULL if p is NULL or the string
+ * is unterminated or longer than pack_session() writes */
+static const char *
+get_string(const char *p, const char *end, char *dst, size_t size)
+{
+	size_t len;
+
+	if (p == NULL) {
+		return NULL;
+	}
+
+	len = strnlen(p, end - p);
+	if ((len == (size_t)(end - p)) || (len >= size)) {
+		return NULL;
+	}
+
+	memcpy(dst, p, len);
+	dst[len] = '\0';
+	return p + len + 1;
+}
+
+/**
+ * @brief Parse a session keyring payload, see kr_sess_hdr_t
+ *
+ * @return 0 on success, -1 if the payload is not a session
+ */
+static int
+unpack_session(const char *buf, size_t len, kr_sess_t *sess)
+{
+	kr_sess_hdr_t hdr;
+	char sec[SECURITY_LABEL_MAX];
+	const char *p, *end = buf + len;
+
+	if (len < sizeof(hdr)) {
+		return -1;
+	}
+
+	memcpy(&hdr, buf, sizeof(hdr));
+	if (hdr.version != KR_SESS_VERSION) {
+		return -1;
+	}
+
+	memset(sess, 0, sizeof(*sess));
+	sess->creation = hdr.creation;
+	memcpy(sess->session_id, hdr.session_id, sizeof(sess->session_id));
+	sess->pid = hdr.pid;
+	sess->sid = hdr.sid;
+	sess->flags = hdr.flags;
+	sess->origin_family = hdr.origin_family;
+	sess->cred.uid = hdr.uid;
+	sess->cred.gid = hdr.gid;
+
+	p = get_string(buf + sizeof(hdr), end, sess->cred.name, sizeof(sess->cred.name));
+	p = get_string(p, end, sess->pam_item.service, sizeof(sess->pam_item.service));
+	p = get_string(p, end, sess->pam_item.ruser, sizeof(sess->pam_item.ruser));
+	p = get_string(p, end, sess->pam_item.rhost, sizeof(sess->pam_item.rhost));
+	p = get_string(p, end, sess->pam_item.tty, sizeof(sess->pam_item.tty));
+	p = get_string(p, end, sec, sizeof(sec));
+	p = get_string(p, end, sess->json_data, sizeof(sess->json_data));
+	if (p != end) {
+		return -1;
+	}
+
+	switch (hdr.origin_family) {
+	case AF_UNIX:
+		sess->origin.unix_origin.pid = hdr.origin.unix_origin.pid;
+		sess->origin.unix_origin.uid = hdr.origin.unix_origin.uid;
+		sess->origin.unix_origin.gid = hdr.origin.unix_origin.gid;
+		sess->origin.unix_origin.loginuid = hdr.origin.unix_origin.loginuid;
+		strlcpy(sess->origin.unix_origin.sec, sec, sizeof(sess->origin.unix_origin.sec));
+		break;
+	case AF_INET:
+	case AF_INET6:
+		sess->origin.tcp_origin = hdr.origin.tcp_origin;
+		break;
+	}
+
+	return 0;
+}
+
 /**
  * @brief Create an entry in kernel keyring for the session
  *
@@ -25,9 +172,10 @@ ptn_kr_open_session(pam_handle_t *pamh, uint32_t ctrl, key_serial_t session_keyr
 	key_serial_t key_id;
 	char key_desc[UUID_STR_LEN + 32] = { 0 };  /* UUID + ":" + pid (max 10 digits) + null */
 	char env_str[64] = { 0 };  /* PAM_TN_ENV_SES_UUID=<uuid> */
+	char payload[KR_SESS_PAYLOAD_MAX];
 	char *uuid_pos;
 	size_t prefix_len = strlen(PAM_TN_ENV_SES_UUID);
-	size_t uuid_len;
+	size_t uuid_len, payload_len;
 	int rc;
 
 	/* key_out is required to return the key serial */
@@ -41,8 +189,10 @@ ptn_kr_open_session(pam_handle_t *pamh, uint32_t ctrl, key_serial_t session_keyr
 	uuid_len = strlen(key_desc);
 	snprintf(key_desc + uuid_len, sizeof(key_desc) - uuid_len, ":%d", sess->pid);
 
+	payload_len = pack_session(sess, payload);
+
 	/* Add the session data to the keyring using "UUID:pid" as description */
-	key_id = add_key(KEY_TYPE_USER, key_desc, sess, sizeof(kr_sess_t), session_keyring);
+	key_id = add_key(KEY_TYPE_USER, key_desc, payload, payload_len, session_keyring);
 	if (key_id == -1) {
 		ptn_set_error(err, "Failed to add session to keyring: %s", strerror(errno));
 		return PAM_SESSION_ERR;
@@ -111,93 +261,146 @@ ptn_kr_close_session(pam_handle_t *pamh, uint32_t ctrl, kr_sess_t *sess,
 }
 
 /**
- * @brief Extract PID from session key description
+ * @brief Read and parse a session key
  *
- * Key descriptions have format "type;uid;gid;perm;UUID:pid"
- * This function extracts the pid portion.
+ * Fails for revoked and expired keys -- a closed session is revoked -- and
+ * for anything in the SESSIONS keyring that is not a session.
  *
- * @param key_id The key serial to get description from
- * @param pid_out Pointer to store the extracted PID
- * @return 0 on success, -1 on error (including expired/revoked keys)
+ * @return 0 on success, -1 on error
  */
 static int
-session_key_to_pid(key_serial_t key_id, pid_t *pid_out)
+read_session_key(key_serial_t key_id, kr_sess_t *sess)
 {
-	char *desc_buf = NULL;
-	char *description;
-	char *pid_str;
-	unsigned int pid_uint;
-	int ret = -1;
+	char buf[KR_SESS_PAYLOAD_MAX];
+	long len;
 
-	if (pid_out == NULL) {
+	/* keyctl_read() returns the full payload size, even if it is larger
+	 * than the buffer */
+	len = keyctl_read(key_id, buf, sizeof(buf));
+	if ((len <= 0) || (len > (long)sizeof(buf))) {
 		return -1;
 	}
 
-	/* Get key description in format "type;uid;gid;perm;description"
-	 * This will fail for expired/revoked keys */
-	if (keyctl_describe_alloc(key_id, &desc_buf) <= 0) {
+	return unpack_session(buf, len, sess);
+}
+
+/**
+ * @brief Check whether the process that opened a session still exists
+ */
+static bool
+session_process_alive(pid_t pid)
+{
+	if (pid <= 0) {
+		/* kill() would address a process group */
+		return false;
+	}
+
+	/* EPERM: the process exists but we lack permission to signal it */
+	return (kill(pid, 0) == 0) || (errno == EPERM);
+}
+
+static void
+copy_pam_item(pam_handle_t *pamh, int item_type, char *buf, size_t bufsz)
+{
+	const char *val = NULL;
+
+	if ((pam_get_item(pamh, item_type, (const void **)&val) == PAM_SUCCESS) &&
+	    (val != NULL)) {
+		strlcpy(buf, val, bufsz);
+	}
+}
+
+void
+ptn_kr_get_pam_items(pam_handle_t *pamh, kr_pam_item_t *items)
+{
+	memset(items, 0, sizeof(*items));
+
+	copy_pam_item(pamh, PAM_SERVICE, items->service, sizeof(items->service));
+	copy_pam_item(pamh, PAM_RUSER, items->ruser, sizeof(items->ruser));
+	copy_pam_item(pamh, PAM_RHOST, items->rhost, sizeof(items->rhost));
+	copy_pam_item(pamh, PAM_TTY, items->tty, sizeof(items->tty));
+}
+
+/**
+ * @brief Find a session that this process opened on another PAM handle
+ *
+ * Samba opens and closes each SMB session with its own pam_start() /
+ * pam_end() pair (smb_pam_claim_session() and smb_pam_close_session()), so
+ * the key serial cached on the opening handle is gone by the time the
+ * session is closed.
+ *
+ * Such a session is identified by the process that opened it, PAM_SERVICE
+ * and PAM_TTY: an application that does this names each session with a
+ * distinct tty (Samba uses "smb/<session id>"). PAM_RHOST is not compared;
+ * Samba takes it from the session's first channel, which multichannel can
+ * replace.
+ *
+ * A session without a tty is never matched. It cannot be told apart from the
+ * other sessions of its process -- middlewared holds many, one PAM handle
+ * each -- so it is only closed on the handle that opened it.
+ */
+key_serial_t
+ptn_kr_find_session(pam_handle_t *pamh, key_serial_t session_keyring,
+		    kr_sess_t *sess_out)
+{
+	kr_pam_item_t items;
+	key_serial_t *krbuf = NULL;
+	key_serial_t found = -1;
+	pid_t pid = getpid();
+	long bufsz;
+	size_t i;
+
+	ptn_kr_get_pam_items(pamh, &items);
+	if ((items.tty[0] == '\0') || (session_keyring <= 0)) {
 		return -1;
 	}
 
-	/* Get last semicolon - description follows it */
-	description = strrchr(desc_buf, ';');
-	if (description == NULL) {
-		errno = EINVAL;
-		free (desc_buf);
+	bufsz = keyctl_read_alloc(session_keyring, (void **)&krbuf);
+	if ((bufsz == -1) || ((bufsz % sizeof(key_serial_t)) != 0)) {
+		free(krbuf);
 		return -1;
 	}
 
-	description++;  /* Move past the semicolon */
-	if (*description == '\0') {
-		errno = EINVAL;
-		free(desc_buf);
-		return -1;
+	for (i = 0; i < (bufsz / sizeof(key_serial_t)); i++) {
+		if (read_session_key(krbuf[i], sess_out) != 0) {
+			continue;
+		}
+
+		/* The stored strings come from the keyring: bound the compare */
+		if ((sess_out->pid == pid) &&
+		    (strncmp(sess_out->pam_item.service, items.service,
+			     sizeof(items.service)) == 0) &&
+		    (strncmp(sess_out->pam_item.tty, items.tty,
+			     sizeof(items.tty)) == 0)) {
+			found = krbuf[i];
+			break;
+		}
 	}
 
-	/* Find the colon separator in "UUID:pid" */
-	pid_str = strchr(description, ':');
-	if (pid_str == NULL) {
-		errno = EINVAL;
-		free(desc_buf);
-		return -1;
+	free(krbuf);
+
+	if (found == -1) {
+		memset(sess_out, 0, sizeof(*sess_out));
 	}
 
-	pid_str++;  /* Move past the colon */
-	if (*pid_str == '\0') {
-		errno = EINVAL;
-		free(desc_buf);
-		return -1;
-	}
-
-	/* Parse PID using our utility function */
-	if (!ptn_parse_uint(pid_str, &pid_uint, 0)) {
-		errno = EINVAL;
-		free(desc_buf);
-		return -1;
-	}
-
-	*pid_out = (pid_t)pid_uint;
-	ret = 0;
-
-	free(desc_buf);
-	return ret;
+	return found;
 }
 
 /**
  * @brief Get count of active sessions for a user
  *
- * This function counts the number of valid sessions by:
- * 1. Reading all keys in the session keyring
- * 2. Parsing key descriptions in format "UUID:pid"
- * 3. Checking if the pid is still alive using kill(pid, 0)
- * 4. Unlinking keys that are REVOKED, EXPIRED, or have dead PIDs
+ * Every key in the SESSIONS keyring is checked, and keys that are revoked
+ * (closed), expired or malformed, or whose process has exited, are unlinked.
+ * Session keys never expire and are charged to the key quota of uid 0, so a
+ * session that is never closed would otherwise stay until reboot.
  */
 int
 ptn_kr_get_session_count(key_serial_t session_keyring, size_t *count_out, kr_err_msg_t *err)
 {
 	key_serial_t *krbuf = NULL;
+	size_t i, nkeys, cnt = 0;
 	long bufsz;
-	size_t i, cnt = 0;
+	kr_sess_t sess;
 
 	if (count_out == NULL) {
 		ptn_set_error(err, "count_out parameter is required");
@@ -222,25 +425,15 @@ ptn_kr_get_session_count(key_serial_t session_keyring, size_t *count_out, kr_err
 		return PAM_SYSTEM_ERR;
 	}
 
-	/* Count valid sessions by checking if PIDs are alive */
-	for (i = 0; i < (bufsz / sizeof(key_serial_t)); i++) {
-		pid_t pid;
-
-		/* Extract PID from key description
-		 * This will fail for expired/revoked keys */
-		if (session_key_to_pid(krbuf[i], &pid) == 0) {
-			/* Check if process is still alive */
-			if (kill(pid, 0) == 0 || errno == EPERM) {
-				/* Process exists (or we lack permission to signal it) */
-				cnt++;
-			} else {
-				/* Process is dead - unlink the key */
-				keyctl_unlink(krbuf[i], session_keyring);
-			}
-		} else {
-			/* Key is expired/revoked or malformed - unlink it */
+	nkeys = bufsz / sizeof(key_serial_t);
+	for (i = 0; i < nkeys; i++) {
+		if ((read_session_key(krbuf[i], &sess) != 0) ||
+		    !session_process_alive(sess.pid)) {
 			keyctl_unlink(krbuf[i], session_keyring);
+			continue;
 		}
+
+		cnt++;
 	}
 
 	free(krbuf);

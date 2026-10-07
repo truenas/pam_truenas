@@ -148,6 +148,12 @@ Session tracking in kernel keyring with optional per-user limits.
 session required    pam_truenas.so max_sessions=10
 ```
 
+`pam_close_session()` may be called on a different PAM handle than
+`pam_open_session()`; Samba opens and closes each SMB session with its own
+handle. The session is then found by the calling process, `PAM_SERVICE` and
+`PAM_TTY` (Samba sets `smb/<session id>`). A session without a tty is only
+closed on the handle that opened it.
+
 ### pam_sm_setcred
 
 Manages no credentials of its own, but returns `PAM_SUCCESS` on success (not
@@ -202,7 +208,7 @@ persistent-keyring:uid=0
         │   ├── 1 (API key)
         │   └── 2 (API key)
         ├── SESSIONS
-        │   └── <uuid> (contains kr_sess_t struct)
+        │   └── <uuid>:<pid> (session, see kr_sess_hdr_t)
         └── FAILLOG
             └── <timestamp> (contains ptn_tally_t struct)
 ```
@@ -220,9 +226,12 @@ Failure entries stored in FAILLOG keyring:
 - Key timeout: 900 seconds (auto-expiry)
 
 Session entries stored in SESSIONS keyring:
-- Key description: Session UUID
-- Key data: `kr_sess_t` struct (defined in `src/kr_session.h`)
-- Key lifetime: Tied to process lifetime
+- Key description: `<session uuid>:<pid>`
+- Key data: `kr_sess_hdr_t` followed by the session's NUL-terminated strings
+  (defined in `src/kr_session.h`), typically 150-250 bytes
+- Key lifetime: Until `pam_close_session()`. Sessions of exited processes are
+  pruned when the user's sessions are counted for `max_sessions`, and by
+  `truenas_pam_session.prune_sessions()`, which middlewared runs periodically
 
 ## Python Libraries
 
@@ -230,7 +239,8 @@ Python libraries are provided to manage the faillog and read session state. Thes
 
 ### truenas_pam_session
 
-Read and iterate PAM sessions stored in the kernel keyring by pam_truenas.
+Read and iterate PAM sessions stored in the kernel keyring by pam_truenas, and
+prune those whose process has exited without closing them.
 
 **Installation:**
 ```bash
@@ -264,6 +274,7 @@ sudo apt install python3-truenas-pam-utils
   - `get_sessions()` - Return list of all sessions
   - `get_session_by_id(uuid)` - Find session by UUID
   - `get_sessions_by_username(name)` - Get all sessions for user
+  - `prune_sessions()` - Remove sessions of exited processes, return the count
 
 **Usage Examples:**
 
@@ -293,7 +304,8 @@ from truenas_pam_session import (
     get_sessions,           # Get all sessions as list
     iterate_sessions,       # Iterate over all sessions
     get_session_by_id,      # Find by UUID
-    get_sessions_by_username # Get user's sessions
+    get_sessions_by_username, # Get user's sessions
+    prune_sessions          # Remove sessions of exited processes
 )
 ```
 
@@ -392,8 +404,8 @@ The expected data format is a JSON object containing at least two fields:
 - `"origin_family"`: one of `"AF_UNIX"`, `"AF_INET"`, or `"AF_INET6"`.
 - `"origin"`: a JSON object containing one of the following origin objects.
 
-NOTE: additional fields will be preserved and stored in a JSON object
-in `json_data` in `kr_sess_t`.
+NOTE: additional fields will be preserved and stored as a JSON object
+in the session's `json_data` string.
 
 This is presented through the `extra_data` field in the `PamSession`
 dataclass.

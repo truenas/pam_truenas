@@ -276,6 +276,10 @@ int pam_sm_open_session(pam_handle_t *pamh, int flags,
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] ENTER: %s\n",
 		      pamh, "pam_sm_open_session");
 
+	/* Set before anything can fail: from now on this handle closes only
+	 * the session it opens. See ptn_close_session() */
+	ctx->session_opened = true;
+
 	/* Check if session limit is enabled and if limit would be exceeded */
 	if (ctx->ctrl & PAM_TRUENAS_CHECK_SESSION_LIMIT) {
 		retval = ptn_kr_get_session_count(ctx->kr.sessions_kr,
@@ -315,6 +319,11 @@ int pam_sm_open_session(pam_handle_t *pamh, int flags,
  *
  * Sessions are inserted into the PAM_TRUENAS -> <username> -> SESSIONS
  * kernel keyring and are removed on pam_close_session()
+ *
+ * pam_close_session() may be called on a different handle than
+ * pam_open_session() -- Samba opens and closes each SMB session with its
+ * own handle. The session is then found by the calling process,
+ * PAM_SERVICE and PAM_TTY.
  *
  * @note if the admin intends to accurately track all server sessions
  * then this should be placed within a common PAM configuration used

@@ -39,12 +39,29 @@ int ptn_open_session(pam_tn_ctx_t *pam_ctx)
 int ptn_close_session(pam_tn_ctx_t *pam_ctx)
 {
 	kr_err_msg_t kr_err;
+	key_serial_t key_id = pam_ctx->session_key_id;
 	int retval;
+
+	/*
+	 * A handle that opened a session closes only that session. Otherwise
+	 * the session, if any, was opened on another handle -- Samba opens and
+	 * closes each SMB session with its own -- and has to be looked up.
+	 */
+	if (!pam_ctx->session_opened) {
+		key_id = ptn_kr_find_session(pam_ctx->pamh,
+					     pam_ctx->kr.sessions_kr,
+					     &pam_ctx->session_info);
+		if (key_id != -1) {
+			PAM_CTX_DEBUG(pam_ctx, LOG_DEBUG,
+				      "Closing session opened on another PAM handle "
+				      "(tty: %s)", pam_ctx->session_info.pam_item.tty);
+		}
+	}
 
 	/* Remove session from keyring using saved key ID */
 	retval = ptn_kr_close_session(pam_ctx->pamh, pam_ctx->ctrl,
 				       &pam_ctx->session_info,
-				       pam_ctx->session_key_id, &kr_err);
+				       key_id, &kr_err);
 	if (retval != PAM_SUCCESS) {
 		PAM_CTX_DEBUG(pam_ctx, LOG_ERR,
 			      "Failed to remove session from keyring: %s",
