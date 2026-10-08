@@ -1,8 +1,8 @@
 """libpam driven directly, the way C applications use it
 
-truenas_pypam only closes a session on the handle that opened it. Samba opens
-and closes each SMB session on its own handle (smb_pam_claim_session() /
-smb_pam_close_session()), so tests of that pattern use these helpers.
+truenas_pypam only closes a session on the PAM context that opened it, so tests
+that open a session on one PAM context and close it on another in the same
+process use these helpers.
 """
 
 import contextlib
@@ -94,16 +94,16 @@ class PamHandle:
         _libpam.pam_end(self.pamh, status)
 
 
-def smb_claim_session(service, user, tty):
-    """smb_pam_claim_session(): open the session on its own handle and end it"""
+def open_in_new_context(service, user, tty):
+    """Open a session on a new PAM context, then end the context"""
     handle = PamHandle(service, user, tty=tty)
     rc = handle.open_session()
     handle.end(rc)
     return rc
 
 
-def smb_close_session(service, user, tty):
-    """smb_pam_close_session(): close the session on a fresh handle"""
+def close_in_new_context(service, user, tty):
+    """Close a session on a new PAM context"""
     handle = PamHandle(service, user, tty=tty)
     rc = handle.close_session()
     handle.end(rc)
@@ -111,9 +111,9 @@ def smb_close_session(service, user, tty):
 
 
 @contextlib.contextmanager
-def other_smbd(service, user, tty):
-    """Another process that claims an SMB session. It exits without closing
-    the session when the context exits."""
+def other_process(service, user, tty):
+    """Another process that opens a session. It exits without closing the
+    session when the with block ends."""
     rc_r, rc_w = os.pipe()
     hold_r, hold_w = os.pipe()
 
@@ -122,7 +122,7 @@ def other_smbd(service, user, tty):
         try:
             os.close(rc_r)
             os.close(hold_w)
-            rc = smb_claim_session(service, user, tty)
+            rc = open_in_new_context(service, user, tty)
             os.write(rc_w, rc.to_bytes(4, "little"))
             os.read(hold_r, 1)
         finally:

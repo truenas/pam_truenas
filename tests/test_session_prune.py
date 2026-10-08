@@ -10,7 +10,7 @@ import pytest
 import truenas_keyring
 import truenas_pam_session
 from truenas_pam_session import PAM_KEYRING_NAME
-from raw_pam import PAM_SUCCESS, other_smbd, pam_service, smb_claim_session, smb_close_session
+from raw_pam import PAM_SUCCESS, close_in_new_context, open_in_new_context, other_process, pam_service
 
 
 def sessions(username, pid):
@@ -26,11 +26,11 @@ def test_prune_sessions_of_exited_process(api_key_data, service):
     """Only sessions whose process has exited are removed"""
     user = api_key_data["username"]
 
-    assert smb_claim_session(service, user, "smb/1") == PAM_SUCCESS
-    with other_smbd(service, user, "smb/2") as (exited_pid, rc):
+    assert open_in_new_context(service, user, "tty1") == PAM_SUCCESS
+    with other_process(service, user, "tty2") as (exited_pid, rc):
         assert rc == PAM_SUCCESS
 
-    with other_smbd(service, user, "smb/3") as (live_pid, rc):
+    with other_process(service, user, "tty3") as (live_pid, rc):
         assert rc == PAM_SUCCESS
 
         assert truenas_pam_session.prune_sessions() >= 1
@@ -38,7 +38,7 @@ def test_prune_sessions_of_exited_process(api_key_data, service):
         assert len(sessions(user, live_pid)) == 1
         assert len(sessions(user, os.getpid())) == 1
 
-    assert smb_close_session(service, user, "smb/1") == PAM_SUCCESS
+    assert close_in_new_context(service, user, "tty1") == PAM_SUCCESS
 
 
 def test_prune_sessions_skips_user_without_sessions(api_key_data, service):
@@ -46,7 +46,7 @@ def test_prune_sessions_skips_user_without_sessions(api_key_data, service):
     is skipped"""
     user = api_key_data["username"]
 
-    with other_smbd(service, user, "smb/1") as (exited_pid, rc):
+    with other_process(service, user, "tty1") as (exited_pid, rc):
         assert rc == PAM_SUCCESS
 
     pam_keyring = truenas_keyring.get_persistent_keyring().search(
