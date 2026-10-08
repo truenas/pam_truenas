@@ -8,6 +8,8 @@ This module provides functionality to read and iterate over PAM sessions
 stored in the kernel keyring by the pam_truenas module.
 """
 
+import errno
+import os
 import struct
 import uuid
 from dataclasses import dataclass
@@ -30,46 +32,35 @@ AF_UNIX = socket.AF_UNIX
 AF_INET = socket.AF_INET
 AF_INET6 = socket.AF_INET6
 
-# Struct format for unpacking the 4096-byte kr_sess_t (kernel keyring session)
+# Struct format for unpacking the kr_sess_hdr_t header of a session key
 # Based on the C struct layout (src/kr_session.h) with proper alignment
+KR_SESS_VERSION = 2
 MDB_SESS_STRUCT = (
+    "I"      # uint32_t version
+    "4x"     # padding
     "16s"    # struct timespec (8 + 8 bytes)
     "16s"    # uuid_t session_id
     "i"      # pid_t pid
     "i"      # pid_t sid
     "I"      # uint32_t flags
     "i"      # int origin_family
-    # kr_cred_t (264 bytes)
-    "256s"   # char name[LOGIN_NAME_MAX]
     "I"      # uid_t uid
     "I"      # gid_t gid
-    # kr_origin_t union (272 bytes)
-    "272s"   # Union data
-    # kr_pam_item_t (1020 bytes)
-    "255s"   # char service[NAME_MAX]
-    "255s"   # char ruser[NAME_MAX]
-    "255s"   # char rhost[NAME_MAX]
-    "255s"   # char tty[NAME_MAX]
-    # json_data (2492 bytes)
-    "2492s"  # char json_data[2492]
+    "40s"    # Union data
 )
+MDB_SESS_SIZE = struct.calcsize(MDB_SESS_STRUCT)
 
 # Offsets into unpacked MDB_SESS_STRUCT tuple
-OFFSET_TIMESPEC = 0
-OFFSET_SESSION_ID = 1
-OFFSET_PID = 2
-OFFSET_SID = 3
-OFFSET_FLAGS = 4
-OFFSET_ORIGIN_FAMILY = 5
-OFFSET_CRED_NAME = 6
+OFFSET_VERSION = 0
+OFFSET_TIMESPEC = 1
+OFFSET_SESSION_ID = 2
+OFFSET_PID = 3
+OFFSET_SID = 4
+OFFSET_FLAGS = 5
+OFFSET_ORIGIN_FAMILY = 6
 OFFSET_CRED_UID = 7
 OFFSET_CRED_GID = 8
 OFFSET_ORIGIN_DATA = 9
-OFFSET_PAM_SERVICE = 10
-OFFSET_PAM_RUSER = 11
-OFFSET_PAM_RHOST = 12
-OFFSET_PAM_TTY = 13
-OFFSET_JSON_DATA = 14
 
 # Struct format for Unix origin
 UNIX_ORIGIN_STRUCT = (
@@ -77,7 +68,6 @@ UNIX_ORIGIN_STRUCT = (
     "I"      # uid_t uid
     "I"      # gid_t gid
     "I"      # uid_t loginuid
-    "256s"   # char sec[SECURITY_LABEL_MAX]
 )
 
 # Offsets into unpacked UNIX_ORIGIN_STRUCT tuple
@@ -85,7 +75,6 @@ UNIX_OFFSET_PID = 0
 UNIX_OFFSET_UID = 1
 UNIX_OFFSET_GID = 2
 UNIX_OFFSET_LOGINUID = 3
-UNIX_OFFSET_SEC_LABEL = 4
 
 # Struct format for TCP origin (reordered to avoid padding)
 TCP_ORIGIN_STRUCT = (
@@ -154,6 +143,21 @@ class PamSession:
     extra_data: Optional[dict] = None  # Parsed JSON data, None if empty or invalid
 
 
+def _process_alive(pid: int) -> bool:
+    if pid <= 0:
+        # os.kill() would address a process group
+        return False
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+
+    return True
+
+
 class SessionIterator:
     """Iterator for PAM sessions stored in kernel keyring"""
 
@@ -173,8 +177,19 @@ class SessionIterator:
 
     def _decode_session(self, key_desc: str, value: bytes) -> PamSession:
         """Decode a session from keyring data"""
-        # Unpack the entire struct
-        unpacked = struct.unpack(MDB_SESS_STRUCT, value)
+        # Unpack the header
+        unpacked = struct.unpack_from(MDB_SESS_STRUCT, value)
+        if unpacked[OFFSET_VERSION] != KR_SESS_VERSION:
+            raise ValueError(f'{unpacked[OFFSET_VERSION]}: unexpected session payload version')
+
+        # Seven NUL-terminated strings follow it, see kr_sess_hdr_t
+        strings = value[MDB_SESS_SIZE:].split(b'\x00')
+        if len(strings) != 8 or strings[-1]:
+            raise ValueError('malformed session payload')
+
+        username, service, ruser, rhost, tty, security_label, json_str = (
+            s.decode('utf-8') for s in strings[:-1]
+        )
 
         # Parse timespec
         timespec_bytes = unpacked[OFFSET_TIMESPEC]
@@ -191,7 +206,6 @@ class SessionIterator:
         origin_family_int = unpacked[OFFSET_ORIGIN_FAMILY]
 
         # Parse credentials
-        username = unpacked[OFFSET_CRED_NAME].rstrip(b'\x00').decode('utf-8')
         uid = unpacked[OFFSET_CRED_UID]
         gid = unpacked[OFFSET_CRED_GID]
 
@@ -215,10 +229,10 @@ class SessionIterator:
             username=username,
             uid=uid,
             gid=gid,
-            service=unpacked[OFFSET_PAM_SERVICE].rstrip(b'\x00').decode('utf-8'),
-            ruser=unpacked[OFFSET_PAM_RUSER].rstrip(b'\x00').decode('utf-8'),
-            rhost=unpacked[OFFSET_PAM_RHOST].rstrip(b'\x00').decode('utf-8'),
-            tty=unpacked[OFFSET_PAM_TTY].rstrip(b'\x00').decode('utf-8'),
+            service=service,
+            ruser=ruser,
+            rhost=rhost,
+            tty=tty,
             origin_family=origin_family
         )
 
@@ -226,13 +240,13 @@ class SessionIterator:
         origin_data = unpacked[OFFSET_ORIGIN_DATA]
         if origin_family_int == AF_UNIX:
             # Unpack Unix origin
-            unix_unpacked = struct.unpack(UNIX_ORIGIN_STRUCT, origin_data[:272])
+            unix_unpacked = struct.unpack_from(UNIX_ORIGIN_STRUCT, origin_data)
             session.origin = PamUnixOrigin(
                 pid=unix_unpacked[UNIX_OFFSET_PID],
                 uid=unix_unpacked[UNIX_OFFSET_UID],
                 gid=unix_unpacked[UNIX_OFFSET_GID],
                 loginuid=unix_unpacked[UNIX_OFFSET_LOGINUID],
-                security_label=unix_unpacked[UNIX_OFFSET_SEC_LABEL].rstrip(b'\x00').decode('utf-8')
+                security_label=security_label
             )
 
         elif origin_family_int in (AF_INET, AF_INET6):
@@ -259,7 +273,6 @@ class SessionIterator:
             )
 
         # Parse JSON data
-        json_str = unpacked[OFFSET_JSON_DATA].rstrip(b'\x00').decode('utf-8')
         if json_str:
             try:
                 session.extra_data = json.loads(json_str)
@@ -364,6 +377,47 @@ class SessionIterator:
 
         return sessions
 
+    def prune_sessions(self) -> int:
+        """
+        Remove sessions whose process has exited without closing them
+
+        Returns:
+            Number of sessions removed
+        """
+        pruned = 0
+
+        for user_keyring in self.pam_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
+            try:
+                sessions_keyring = user_keyring.search(
+                    key_type=truenas_keyring.KeyType.KEYRING,
+                    description=PAM_SESSION_NAME
+                )
+            except FileNotFoundError:
+                # pam_truenas has not handled this user yet
+                continue
+
+            for session_key in sessions_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
+                # Key description is "<session uuid>:<pid>"
+                try:
+                    pid = int(session_key.description.rpartition(':')[2])
+                except ValueError:
+                    continue
+
+                if _process_alive(pid):
+                    continue
+
+                try:
+                    sessions_keyring.unlink_key(session_key.serial)
+                except truenas_keyring.KeyringError as e:
+                    # pam_truenas may have pruned it while counting sessions
+                    if e.errno != errno.ENOENT:
+                        raise
+                    continue
+
+                pruned += 1
+
+        return pruned
+
 
 # Convenience functions
 def get_sessions() -> list[PamSession]:
@@ -414,3 +468,19 @@ def get_sessions_by_username(username: str) -> list[PamSession]:
     """
     iterator = SessionIterator()
     return iterator.get_sessions_by_username(username)
+
+
+def prune_sessions() -> int:
+    """
+    Remove sessions whose process has exited without closing them
+
+    Returns:
+        Number of sessions removed
+    """
+    try:
+        iterator = SessionIterator()
+    except FileNotFoundError:
+        # No PAM_TRUENAS keyring yet, so no sessions
+        return 0
+
+    return iterator.prune_sessions()

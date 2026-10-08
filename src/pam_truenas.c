@@ -276,6 +276,9 @@ int pam_sm_open_session(pam_handle_t *pamh, int flags,
 	PAM_CTX_DEBUG(ctx, LOG_DEBUG, "[pamh: %p] ENTER: %s\n",
 		      pamh, "pam_sm_open_session");
 
+	/* This handle closes only the session it opens, see ptn_close_session() */
+	ctx->session_opened = true;
+
 	/* Check if session limit is enabled and if limit would be exceeded */
 	if (ctx->ctrl & PAM_TRUENAS_CHECK_SESSION_LIMIT) {
 		retval = ptn_kr_get_session_count(ctx->kr.sessions_kr,
