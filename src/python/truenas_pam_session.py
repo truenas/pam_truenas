@@ -5,8 +5,7 @@
 TrueNAS PAM Session Iterator
 
 This module provides functionality to read and iterate over PAM sessions
-stored in the kernel keyring by the pam_truenas module, and to prune sessions
-whose process has exited without closing them.
+stored in the kernel keyring by the pam_truenas module.
 """
 
 import errno
@@ -33,40 +32,37 @@ AF_UNIX = socket.AF_UNIX
 AF_INET = socket.AF_INET
 AF_INET6 = socket.AF_INET6
 
-# A session key's payload is kr_sess_hdr_t (src/kr_session.h) followed by the
-# session's strings, each NUL-terminated, in the order of SESS_STRINGS
+# Struct format for unpacking the kr_sess_hdr_t header of a session key
+# Based on the C struct layout (src/kr_session.h) with proper alignment
 KR_SESS_VERSION = 2
-
-SESS_HDR_STRUCT = (
+MDB_SESS_STRUCT = (
     "I"      # uint32_t version
-    "I"      # uint32_t flags
-    "16s"    # struct timespec creation (8 + 8 bytes)
+    "4x"     # padding
+    "16s"    # struct timespec (8 + 8 bytes)
     "16s"    # uuid_t session_id
     "i"      # pid_t pid
     "i"      # pid_t sid
+    "I"      # uint32_t flags
     "i"      # int origin_family
     "I"      # uid_t uid
     "I"      # gid_t gid
-    "40s"    # origin union
-    "4x"     # padding
+    "40s"    # Union data
 )
-SESS_HDR_SIZE = struct.calcsize(SESS_HDR_STRUCT)
+MDB_SESS_SIZE = struct.calcsize(MDB_SESS_STRUCT)
 
-# Offsets into unpacked SESS_HDR_STRUCT tuple
-HDR_OFFSET_VERSION = 0
-HDR_OFFSET_FLAGS = 1
-HDR_OFFSET_TIMESPEC = 2
-HDR_OFFSET_SESSION_ID = 3
-HDR_OFFSET_PID = 4
-HDR_OFFSET_SID = 5
-HDR_OFFSET_ORIGIN_FAMILY = 6
-HDR_OFFSET_UID = 7
-HDR_OFFSET_GID = 8
-HDR_OFFSET_ORIGIN_DATA = 9
+# Offsets into unpacked MDB_SESS_STRUCT tuple
+OFFSET_VERSION = 0
+OFFSET_TIMESPEC = 1
+OFFSET_SESSION_ID = 2
+OFFSET_PID = 3
+OFFSET_SID = 4
+OFFSET_FLAGS = 5
+OFFSET_ORIGIN_FAMILY = 6
+OFFSET_CRED_UID = 7
+OFFSET_CRED_GID = 8
+OFFSET_ORIGIN_DATA = 9
 
-SESS_STRINGS = ("username", "service", "ruser", "rhost", "tty", "security_label", "json_data")
-
-# Struct format for Unix origin. Its security label is one of the strings.
+# Struct format for Unix origin
 UNIX_ORIGIN_STRUCT = (
     "i"      # pid_t pid
     "I"      # uid_t uid
@@ -148,7 +144,6 @@ class PamSession:
 
 
 def _process_alive(pid: int) -> bool:
-    """Check whether a process exists, as pam_truenas does when counting sessions"""
     if pid <= 0:
         # os.kill() would address a process group
         return False
@@ -158,7 +153,6 @@ def _process_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        # The process exists but we may not signal it
         pass
 
     return True
@@ -183,35 +177,37 @@ class SessionIterator:
 
     def _decode_session(self, key_desc: str, value: bytes) -> PamSession:
         """Decode a session from keyring data"""
-        hdr = struct.unpack_from(SESS_HDR_STRUCT, value)
-        if hdr[HDR_OFFSET_VERSION] != KR_SESS_VERSION:
-            raise ValueError(f'{hdr[HDR_OFFSET_VERSION]}: unexpected session payload version')
+        # Unpack the header
+        unpacked = struct.unpack_from(MDB_SESS_STRUCT, value)
+        if unpacked[OFFSET_VERSION] != KR_SESS_VERSION:
+            raise ValueError(f'{unpacked[OFFSET_VERSION]}: unexpected session payload version')
 
-        # Each string is NUL-terminated, so splitting leaves an empty last item
-        strings = value[SESS_HDR_SIZE:].split(b'\x00')
-        if len(strings) != len(SESS_STRINGS) + 1 or strings[-1]:
+        # Seven NUL-terminated strings follow it, see kr_sess_hdr_t
+        strings = value[MDB_SESS_SIZE:].split(b'\x00')
+        if len(strings) != 8 or strings[-1]:
             raise ValueError('malformed session payload')
 
-        fields = dict(zip(SESS_STRINGS, (s.decode('utf-8') for s in strings)))
+        username, service, ruser, rhost, tty, security_label, json_str = (
+            s.decode('utf-8') for s in strings[:-1]
+        )
 
         # Parse timespec
-        timespec_bytes = hdr[HDR_OFFSET_TIMESPEC]
+        timespec_bytes = unpacked[OFFSET_TIMESPEC]
         tv_sec, tv_nsec = struct.unpack("qq", timespec_bytes)
         creation = datetime.fromtimestamp(tv_sec + tv_nsec / 1_000_000_000)
 
         # Parse UUID
-        session_id = uuid.UUID(bytes=hdr[HDR_OFFSET_SESSION_ID])
+        session_id = uuid.UUID(bytes=unpacked[OFFSET_SESSION_ID])
 
         # Basic fields
-        pid = hdr[HDR_OFFSET_PID]
-        sid = hdr[HDR_OFFSET_SID]
-        flags = hdr[HDR_OFFSET_FLAGS]
-        origin_family_int = hdr[HDR_OFFSET_ORIGIN_FAMILY]
+        pid = unpacked[OFFSET_PID]
+        sid = unpacked[OFFSET_SID]
+        flags = unpacked[OFFSET_FLAGS]
+        origin_family_int = unpacked[OFFSET_ORIGIN_FAMILY]
 
         # Parse credentials
-        username = fields['username']
-        uid = hdr[HDR_OFFSET_UID]
-        gid = hdr[HDR_OFFSET_GID]
+        uid = unpacked[OFFSET_CRED_UID]
+        gid = unpacked[OFFSET_CRED_GID]
 
         # Determine origin family name
         if origin_family_int == AF_UNIX:
@@ -233,15 +229,15 @@ class SessionIterator:
             username=username,
             uid=uid,
             gid=gid,
-            service=fields['service'],
-            ruser=fields['ruser'],
-            rhost=fields['rhost'],
-            tty=fields['tty'],
+            service=service,
+            ruser=ruser,
+            rhost=rhost,
+            tty=tty,
             origin_family=origin_family
         )
 
         # Parse origin union based on family
-        origin_data = hdr[HDR_OFFSET_ORIGIN_DATA]
+        origin_data = unpacked[OFFSET_ORIGIN_DATA]
         if origin_family_int == AF_UNIX:
             # Unpack Unix origin
             unix_unpacked = struct.unpack_from(UNIX_ORIGIN_STRUCT, origin_data)
@@ -250,7 +246,7 @@ class SessionIterator:
                 uid=unix_unpacked[UNIX_OFFSET_UID],
                 gid=unix_unpacked[UNIX_OFFSET_GID],
                 loginuid=unix_unpacked[UNIX_OFFSET_LOGINUID],
-                security_label=fields['security_label']
+                security_label=security_label
             )
 
         elif origin_family_int in (AF_INET, AF_INET6):
@@ -277,7 +273,6 @@ class SessionIterator:
             )
 
         # Parse JSON data
-        json_str = fields['json_data']
         if json_str:
             try:
                 session.extra_data = json.loads(json_str)
@@ -386,10 +381,6 @@ class SessionIterator:
         """
         Remove sessions whose process has exited without closing them
 
-        pam_truenas prunes these only while counting a user's sessions for
-        max_sessions. Otherwise a process that crashes or is killed leaves its
-        session in the keyring, charged to uid 0's key quota, until reboot.
-
         Returns:
             Number of sessions removed
         """
@@ -402,8 +393,7 @@ class SessionIterator:
                     description=PAM_SESSION_NAME
                 )
             except FileNotFoundError:
-                # pam_truenas creates SESSIONS when it first handles the user,
-                # so a user keyring holding only API keys may have none
+                # pam_truenas has not handled this user yet
                 continue
 
             for session_key in sessions_keyring.iter_keyring_contents(unlink_revoked=True, unlink_expired=True):
