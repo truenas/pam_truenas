@@ -202,7 +202,7 @@ persistent-keyring:uid=0
         │   ├── 1 (API key)
         │   └── 2 (API key)
         ├── SESSIONS
-        │   └── <uuid> (contains kr_sess_t struct)
+        │   └── <uuid> (contains kr_sess_hdr_t and strings)
         └── FAILLOG
             └── <timestamp> (contains ptn_tally_t struct)
 ```
@@ -221,7 +221,7 @@ Failure entries stored in FAILLOG keyring:
 
 Session entries stored in SESSIONS keyring:
 - Key description: Session UUID
-- Key data: `kr_sess_t` struct (defined in `src/kr_session.h`)
+- Key data: `kr_sess_hdr_t` followed by the session's strings (defined in `src/kr_session.h`)
 - Key lifetime: Tied to process lifetime
 
 ## Python Libraries
@@ -264,6 +264,7 @@ sudo apt install python3-truenas-pam-utils
   - `get_sessions()` - Return list of all sessions
   - `get_session_by_id(uuid)` - Find session by UUID
   - `get_sessions_by_username(name)` - Get all sessions for user
+  - `prune_sessions()` - Remove sessions of exited processes
 
 **Usage Examples:**
 
@@ -293,7 +294,8 @@ from truenas_pam_session import (
     get_sessions,           # Get all sessions as list
     iterate_sessions,       # Iterate over all sessions
     get_session_by_id,      # Find by UUID
-    get_sessions_by_username # Get user's sessions
+    get_sessions_by_username, # Get user's sessions
+    prune_sessions          # Remove sessions of exited processes
 )
 ```
 

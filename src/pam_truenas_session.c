@@ -41,6 +41,13 @@ int ptn_close_session(pam_tn_ctx_t *pam_ctx)
 	kr_err_msg_t kr_err;
 	int retval;
 
+	/* Samba opens and closes each SMB session on its own handle */
+	if (!pam_ctx->session_opened) {
+		pam_ctx->session_key_id = ptn_kr_find_session(pam_ctx->pamh,
+							      pam_ctx->kr.sessions_kr,
+							      &pam_ctx->session_info);
+	}
+
 	/* Remove session from keyring using saved key ID */
 	retval = ptn_kr_close_session(pam_ctx->pamh, pam_ctx->ctrl,
 				       &pam_ctx->session_info,

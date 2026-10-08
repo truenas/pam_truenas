@@ -93,6 +93,40 @@ typedef struct {
 
 _Static_assert(sizeof(kr_sess_t) == 4096, "kr_sess_t unexpected size");
 
+/* Version of the session key payload. Version 1 was kr_sess_t itself. */
+#define KR_SESS_VERSION 2
+
+/**
+ * @brief	fixed fields of kr_sess_t as stored in the keyring
+ *
+ * A session key's payload is this header followed by the session's strings,
+ * each NUL-terminated: username, service, ruser, rhost, tty, security label
+ * (AF_UNIX origin only) and json data.
+ */
+typedef struct {
+	uint32_t version;		/* offset 0, size 4 - KR_SESS_VERSION */
+	uint32_t pad;			/* offset 4, size 4 */
+	struct timespec creation;	/* offset 8, size 16 */
+	uuid_t session_id;		/* offset 24, size 16 */
+	pid_t pid;			/* offset 40, size 4 */
+	pid_t sid;			/* offset 44, size 4 */
+	uint32_t flags;			/* offset 48, size 4 */
+	int origin_family;		/* offset 52, size 4 */
+	uid_t uid;			/* offset 56, size 4 */
+	gid_t gid;			/* offset 60, size 4 */
+	union {
+		struct {
+			pid_t pid;
+			uid_t uid;
+			gid_t gid;
+			uid_t loginuid;
+		} unix_origin;		/* kr_origin_unix_t without its label */
+		kr_origin_tcp_t tcp_origin;
+	} origin;			/* offset 64, size 40 */
+} kr_sess_hdr_t;
+
+_Static_assert(sizeof(kr_sess_hdr_t) == 104, "kr_sess_hdr_t unexpected size");
+
 /**
  * @brief create an entry in kernel keyring for the session
  *
@@ -126,6 +160,14 @@ int ptn_kr_open_session(pam_handle_t *pamh, uint32_t ctrl, key_serial_t user_kr,
  */
 int ptn_kr_close_session(pam_handle_t *pamh, uint32_t ctrl, kr_sess_t *sess,
                          key_serial_t key_id, kr_err_msg_t *err);
+
+/**
+ * @brief find a session that this process opened on another PAM handle
+ *
+ * @return key serial of the session, or -1 if none matches
+ */
+key_serial_t ptn_kr_find_session(pam_handle_t *pamh, key_serial_t session_keyring,
+                                 kr_sess_t *sess_out);
 
 /**
  * @brief get count of active sessions for a user
