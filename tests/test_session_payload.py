@@ -63,7 +63,7 @@ def session_payload(username, session_uuid):
 def test_session_round_trip(api_key_data, service, session_data):
     """Every field of a session reads back as it was stored"""
     user = api_key_data["username"]
-    handle, session_uuid = open_session(service, user, tty="smb/7",
+    handle, session_uuid = open_session(service, user, tty="tty7",
                                         rhost="client.example",
                                         session_data=session_data)
 
@@ -75,7 +75,7 @@ def test_session_round_trip(api_key_data, service, session_data):
     assert session.pid == os.getpid()
     assert session.sid == os.getsid(0)
     assert (session.service, session.ruser, session.rhost, session.tty) == \
-        (service, "", "client.example", "smb/7")
+        (service, "", "client.example", "tty7")
 
     if session_data is None:
         assert session.origin_family == "Unknown(0)"
